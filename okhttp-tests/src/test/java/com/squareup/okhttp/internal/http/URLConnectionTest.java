@@ -16,66 +16,13 @@
 
 package com.squareup.okhttp.internal.http;
 
-import com.squareup.okhttp.AbstractResponseCache;
-import com.squareup.okhttp.Cache;
-import com.squareup.okhttp.Challenge;
-import com.squareup.okhttp.ConnectionPool;
-import com.squareup.okhttp.Credentials;
-import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.OkUrlFactory;
-import com.squareup.okhttp.Protocol;
-import com.squareup.okhttp.Response;
-import com.squareup.okhttp.internal.Internal;
-import com.squareup.okhttp.internal.RecordingAuthenticator;
-import com.squareup.okhttp.internal.RecordingHostnameVerifier;
-import com.squareup.okhttp.internal.RecordingOkAuthenticator;
-import com.squareup.okhttp.internal.SslContextBuilder;
-import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.*;
+import com.squareup.okhttp.internal.*;
 import com.squareup.okhttp.internal.huc.CacheAdapter;
 import com.squareup.okhttp.mockwebserver.MockResponse;
 import com.squareup.okhttp.mockwebserver.MockWebServer;
 import com.squareup.okhttp.mockwebserver.RecordedRequest;
 import com.squareup.okhttp.mockwebserver.SocketPolicy;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.Authenticator;
-import java.net.CacheRequest;
-import java.net.ConnectException;
-import java.net.HttpRetryException;
-import java.net.HttpURLConnection;
-import java.net.InetAddress;
-import java.net.ProtocolException;
-import java.net.Proxy;
-import java.net.ProxySelector;
-import java.net.SocketAddress;
-import java.net.URI;
-import java.net.URL;
-import java.net.URLConnection;
-import java.net.UnknownHostException;
-import java.security.cert.CertificateException;
-import java.security.cert.X509Certificate;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.zip.GZIPInputStream;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLHandshakeException;
-import javax.net.ssl.SSLSocketFactory;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import okio.Buffer;
 import okio.BufferedSink;
 import okio.GzipSink;
@@ -85,21 +32,27 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 
+import javax.net.ssl.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Authenticator;
+import java.net.*;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.zip.GZIPInputStream;
+
 import static com.squareup.okhttp.internal.Util.UTF_8;
 import static com.squareup.okhttp.internal.http.OkHeaders.SELECTED_PROTOCOL;
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_TEMP_REDIRECT;
-import static com.squareup.okhttp.mockwebserver.SocketPolicy.DISCONNECT_AT_END;
-import static com.squareup.okhttp.mockwebserver.SocketPolicy.DISCONNECT_AT_START;
-import static com.squareup.okhttp.mockwebserver.SocketPolicy.SHUTDOWN_INPUT_AT_END;
-import static com.squareup.okhttp.mockwebserver.SocketPolicy.SHUTDOWN_OUTPUT_AT_END;
+import static com.squareup.okhttp.mockwebserver.SocketPolicy.*;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 
 /** Android's URLConnectionTest. */
 public final class URLConnectionTest {
@@ -1208,7 +1161,7 @@ public final class URLConnectionTest {
   }
 
   @Test public void disableTransparentGzip() throws Exception {
-    client.setTransparentGzip(false);
+    client.client().setTransparentGzip(false);
 
     server.enqueue(new MockResponse()
         .setBody("a"));
