@@ -24,7 +24,6 @@ import com.squareup.okhttp.Request;
 import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.Transport;
 import java.io.IOException;
-import java.net.ResponseCache;
 
 /**
  * Escalate internal APIs in {@code com.squareup.okhttp} so they can be used
@@ -43,31 +42,22 @@ public abstract class Internal {
 
   public abstract int recycleCount(Connection connection);
 
-  public abstract Object getOwner(Connection connection);
-
   public abstract void setProtocol(Connection connection, Protocol protocol);
 
   public abstract void setOwner(Connection connection, HttpEngine httpEngine);
-
-  public abstract void connect(Connection connection,
-      int connectTimeout, int readTimeout, int writeTimeout, Request request) throws IOException;
-
-  public abstract boolean isConnected(Connection connection);
-
-  public abstract boolean isSpdy(Connection connection);
-
-  public abstract void setTimeouts(Connection connection, int readTimeout, int writeTimeout)
-      throws IOException;
 
   public abstract boolean isReadable(Connection pooled);
 
   public abstract void addLine(Headers.Builder builder, String line);
 
-  public abstract void setResponseCache(OkHttpClient client, ResponseCache responseCache);
+  public abstract void setCache(OkHttpClient client, InternalCache internalCache);
 
   public abstract InternalCache internalCache(OkHttpClient client);
 
   public abstract void recycle(ConnectionPool pool, Connection connection);
 
-  public abstract void share(ConnectionPool connectionPool, Connection connection);
+  public abstract RouteDatabase routeDatabase(OkHttpClient client);
+
+  public abstract void connectAndSetOwner(OkHttpClient client, Connection connection,
+      HttpEngine owner, Request request) throws IOException;
 }

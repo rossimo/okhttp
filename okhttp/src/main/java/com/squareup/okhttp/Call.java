@@ -33,9 +33,8 @@ import static com.squareup.okhttp.internal.http.HttpEngine.MAX_REDIRECTS;
  * canceled. As this object represents a single request/response pair (stream),
  * it cannot be executed twice.
  */
-public final class Call {
+public class Call {
   private final OkHttpClient client;
-  private final Dispatcher dispatcher;
   private int redirectionCount;
 
   // Guarded by this.
@@ -46,9 +45,10 @@ public final class Call {
   private Request request;
   HttpEngine engine;
 
-  Call(OkHttpClient client, Dispatcher dispatcher, Request request) {
-    this.client = client;
-    this.dispatcher = dispatcher;
+  protected Call(OkHttpClient client, Request request) {
+    // Copy the client. Otherwise changes (socket factory, redirect policy,
+    // etc.) may incorrectly be reflected in the request when it is executed.
+    this.client = client.copyWithDefaults();
     this.request = request;
   }
 
@@ -58,7 +58,7 @@ public final class Call {
    *
    * <p>The caller may read the response body with the response's
    * {@link Response#body} method.  To facilitate connection recycling, callers
-   * should always {@link Response.Body#close() close the response body}.
+   * should always {@link ResponseBody#close() close the response body}.
    *
    * <p>Note that transport-layer success (receiving a HTTP response code,
    * headers and body) does not necessarily indicate application-layer success:
@@ -96,12 +96,12 @@ public final class Call {
    *
    * @throws IllegalStateException when the call has already been executed.
    */
-  public void enqueue(Response.Callback responseCallback) {
+  public void enqueue(Callback responseCallback) {
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
     }
-    dispatcher.enqueue(new AsyncCall(responseCallback));
+    client.getDispatcher().enqueue(new AsyncCall(responseCallback));
   }
 
   /**
@@ -114,9 +114,9 @@ public final class Call {
   }
 
   final class AsyncCall extends NamedRunnable {
-    private final Response.Callback responseCallback;
+    private final Callback responseCallback;
 
-    private AsyncCall(Response.Callback responseCallback) {
+    private AsyncCall(Callback responseCallback) {
       super("OkHttp %s", request.urlString());
       this.responseCallback = responseCallback;
     }
@@ -143,23 +143,17 @@ public final class Call {
         Response response = getResponse();
         if (canceled) {
           signalledCallback = true;
-          responseCallback.onFailure(new Failure.Builder()
-              .request(request)
-              .exception(new IOException("Canceled"))
-              .build());
+          responseCallback.onFailure(request, new IOException("Canceled"));
         } else {
           signalledCallback = true;
+          engine.releaseConnection();
           responseCallback.onResponse(response);
         }
       } catch (IOException e) {
-        if (signalledCallback) return; // Do not signal the callback twice!
-        responseCallback.onFailure(new Failure.Builder()
-            .request(request)
-            .exception(e)
-            .build());
+        if (signalledCallback) throw new RuntimeException(e); // Do not signal the callback twice!
+        responseCallback.onFailure(request, e);
       } finally {
-        engine.close(); // Close the connection if it isn't already.
-        dispatcher.finished(this);
+        client.getDispatcher().finished(this);
       }
     }
   }
@@ -169,17 +163,16 @@ public final class Call {
    * call was canceled.
    */
   private Response getResponse() throws IOException {
-    Response redirectedBy = null;
-
     // Copy body metadata to the appropriate request headers.
-    Request.Body body = request.body();
+    RequestBody body = request.body();
     RetryableSink requestBodyOut = null;
     if (body != null) {
-      MediaType contentType = body.contentType();
-      if (contentType == null) throw new IllegalStateException("contentType == null");
-
       Request.Builder requestBuilder = request.newBuilder();
-      requestBuilder.header("Content-Type", contentType.toString());
+
+      MediaType contentType = body.contentType();
+      if (contentType != null) {
+        requestBuilder.header("Content-Type", contentType.toString());
+      }
 
       long contentLength = body.contentLength();
       if (contentLength != -1) {
@@ -196,7 +189,7 @@ public final class Call {
     }
 
     // Create the initial HTTP engine. Retries and redirects need new engine for each attempt.
-    engine = new HttpEngine(client, request, false, null, null, requestBodyOut);
+    engine = new HttpEngine(client, request, false, null, null, requestBodyOut, null);
 
     while (true) {
       if (canceled) return null;
@@ -228,7 +221,6 @@ public final class Call {
         engine.releaseConnection();
         return response.newBuilder()
             .body(new RealResponseBody(response, engine.getResponseBody()))
-            .redirectedBy(redirectedBy)
             .build();
       }
 
@@ -236,18 +228,17 @@ public final class Call {
         throw new ProtocolException("Too many redirects: " + redirectionCount);
       }
 
-      if (!engine.sameConnection(followUp)) {
+      if (!engine.sameConnection(followUp.url())) {
         engine.releaseConnection();
       }
 
       Connection connection = engine.close();
-      redirectedBy = response.newBuilder().redirectedBy(redirectedBy).build(); // Chained.
       request = followUp;
-      engine = new HttpEngine(client, request, false, connection, null, null);
+      engine = new HttpEngine(client, request, false, connection, null, null, response);
     }
   }
 
-  private static class RealResponseBody extends Response.Body {
+  private static class RealResponseBody extends ResponseBody {
     private final Response response;
     private final BufferedSource source;
 

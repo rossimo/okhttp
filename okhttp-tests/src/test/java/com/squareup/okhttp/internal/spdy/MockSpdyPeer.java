@@ -42,8 +42,8 @@ public final class MockSpdyPeer implements Closeable {
   private Variant variant = new Spdy3();
   private final Buffer bytesOut = new Buffer();
   private FrameWriter frameWriter = variant.newWriter(bytesOut, client);
-  private final List<OutFrame> outFrames = new ArrayList<OutFrame>();
-  private final BlockingQueue<InFrame> inFrames = new LinkedBlockingQueue<InFrame>();
+  private final List<OutFrame> outFrames = new ArrayList<>();
+  private final BlockingQueue<InFrame> inFrames = new LinkedBlockingQueue<>();
   private int port;
   private final ExecutorService executor = Executors.newSingleThreadExecutor(
       Util.threadFactory("MockSpdyPeer", false));
@@ -192,7 +192,6 @@ public final class MockSpdyPeer implements Closeable {
     public boolean inFinished;
     public int streamId;
     public int associatedStreamId;
-    public int priority;
     public ErrorCode errorCode;
     public long windowSizeIncrement;
     public List<Header> headerBlock;
@@ -222,15 +221,13 @@ public final class MockSpdyPeer implements Closeable {
     }
 
     @Override public void headers(boolean outFinished, boolean inFinished, int streamId,
-        int associatedStreamId, int priority, List<Header> headerBlock,
-        HeadersMode headersMode) {
+        int associatedStreamId, List<Header> headerBlock, HeadersMode headersMode) {
       if (this.type != -1) throw new IllegalStateException();
       this.type = Spdy3.TYPE_HEADERS;
       this.outFinished = outFinished;
       this.inFinished = inFinished;
       this.streamId = streamId;
       this.associatedStreamId = associatedStreamId;
-      this.priority = priority;
       this.headerBlock = headerBlock;
       this.headersMode = headersMode;
     }
@@ -274,16 +271,22 @@ public final class MockSpdyPeer implements Closeable {
       this.windowSizeIncrement = windowSizeIncrement;
     }
 
-    @Override public void priority(int streamId, int priority) {
+    @Override public void priority(int streamId, int streamDependency, int weight,
+        boolean exclusive) {
       throw new UnsupportedOperationException();
     }
 
     @Override
     public void pushPromise(int streamId, int associatedStreamId, List<Header> headerBlock) {
-      this.type = Http20Draft10.TYPE_PUSH_PROMISE;
+      this.type = Http20Draft13.TYPE_PUSH_PROMISE;
       this.streamId = streamId;
       this.associatedStreamId = associatedStreamId;
       this.headerBlock = headerBlock;
+    }
+
+    @Override public void alternateService(int streamId, String origin, ByteString protocol,
+        String host, int port, long maxAge) {
+      throw new UnsupportedOperationException();
     }
   }
 }

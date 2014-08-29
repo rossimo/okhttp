@@ -46,12 +46,13 @@ public final class SettingsTest {
     assertEquals(8096, settings.getHeaderTableSize());
 
     // WARNING: clash on flags between spdy/3 and HTTP/2!
-    assertEquals(-3, settings.getDownloadBandwidth(-3));
     assertEquals(true, settings.getEnablePush(true));
+    settings.set(Settings.ENABLE_PUSH, 0, 1);
+    assertEquals(true, settings.getEnablePush(false));
+    settings.clear();
+    assertEquals(-3, settings.getDownloadBandwidth(-3));
     settings.set(DOWNLOAD_BANDWIDTH, 0, 53);
     assertEquals(53, settings.getDownloadBandwidth(-3));
-    settings.set(Settings.ENABLE_PUSH, 0, 0);
-    assertEquals(false, settings.getEnablePush(true));
 
     assertEquals(-3, settings.getRoundTripTime(-3));
     settings.set(Settings.ROUND_TRIP_TIME, 0, 64);

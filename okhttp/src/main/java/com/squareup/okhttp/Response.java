@@ -15,19 +15,10 @@
  */
 package com.squareup.okhttp;
 
-import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.internal.http.OkHeaders;
-import java.io.Closeable;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.Reader;
-import java.nio.charset.Charset;
 import java.util.Collections;
 import java.util.List;
-import okio.BufferedSource;
 
-import static com.squareup.okhttp.internal.Util.UTF_8;
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_TEMP_REDIRECT;
 import static java.net.HttpURLConnection.HTTP_MOVED_PERM;
 import static java.net.HttpURLConnection.HTTP_MOVED_TEMP;
@@ -48,8 +39,10 @@ public final class Response {
   private final String message;
   private final Handshake handshake;
   private final Headers headers;
-  private final Body body;
-  private final Response redirectedBy;
+  private final ResponseBody body;
+  private Response networkResponse;
+  private Response cacheResponse;
+  private final Response priorResponse;
 
   private volatile CacheControl cacheControl; // Lazily initialized.
 
@@ -61,19 +54,20 @@ public final class Response {
     this.handshake = builder.handshake;
     this.headers = builder.headers.build();
     this.body = builder.body;
-    this.redirectedBy = builder.redirectedBy;
+    this.networkResponse = builder.networkResponse;
+    this.cacheResponse = builder.cacheResponse;
+    this.priorResponse = builder.priorResponse;
   }
 
   /**
-   * The wire-level request that initiated this HTTP response. This is usually
-   * <strong>not</strong> the same request instance provided to the HTTP client:
+   * The wire-level request that initiated this HTTP response. This is not
+   * necessarily the same request issued by the application:
    * <ul>
    *     <li>It may be transformed by the HTTP client. For example, the client
-   *         may have added its own {@code Content-Encoding} header to enable
-   *         response compression.
-   *     <li>It may be the request generated in response to an HTTP redirect.
-   *         In this case the request URL may be different than the initial
-   *         request URL.
+   *         may copy headers like {@code Content-Length} from the request body.
+   *     <li>It may be the request generated in response to an HTTP redirect or
+   *         authentication challenge. In this case the request URL may be
+   *         different than the initial request URL.
    * </ul>
    */
   public Request request() {
@@ -88,9 +82,17 @@ public final class Response {
     return protocol;
   }
 
-  /** Returns the HTTP status code or -1 if it is unknown. */
+  /** Returns the HTTP status code. */
   public int code() {
     return code;
+  }
+
+  /**
+   * Returns true if the code is in [200..300), which means the request was
+   * successfully received, understood, and accepted.
+   */
+  public boolean isSuccessful() {
+    return code >= 200 && code < 300;
   }
 
   /** Returns the HTTP status message or null if it is unknown. */
@@ -123,7 +125,7 @@ public final class Response {
     return headers;
   }
 
-  public Body body() {
+  public ResponseBody body() {
     return body;
   }
 
@@ -146,13 +148,32 @@ public final class Response {
   }
 
   /**
+   * Returns the raw response received from the network. Will be null if this
+   * response didn't use the network, such as when the response is fully cached.
+   * The body of the returned response should not be read.
+   */
+  public Response networkResponse() {
+    return networkResponse;
+  }
+
+  /**
+   * Returns the raw response received from the cache. Will be null if this
+   * response didn't use the cache. For conditional get requests the cache
+   * response and network response may both be non-null. The body of the
+   * returned response should not be read.
+   */
+  public Response cacheResponse() {
+    return cacheResponse;
+  }
+
+  /**
    * Returns the response for the HTTP redirect or authorization challenge that
    * triggered this response, or null if this response wasn't triggered by an
    * automatic retry. The body of the returned response should not be read
    * because it has already been consumed by the redirecting client.
    */
-  public Response redirectedBy() {
-    return redirectedBy;
+  public Response priorResponse() {
+    return priorResponse;
   }
 
   /**
@@ -172,72 +193,6 @@ public final class Response {
       return Collections.emptyList();
     }
     return OkHeaders.parseChallenges(headers(), responseField);
-  }
-
-  public abstract static class Body implements Closeable {
-    /** Multiple calls to {@link #charStream()} must return the same instance. */
-    private Reader reader;
-
-    public abstract MediaType contentType();
-
-    /**
-     * Returns the number of bytes in that will returned by {@link #bytes}, or
-     * {@link #byteStream}, or -1 if unknown.
-     */
-    public abstract long contentLength();
-
-    public final InputStream byteStream() {
-      return source().inputStream();
-    }
-
-    public abstract BufferedSource source();
-
-    public final byte[] bytes() throws IOException {
-      long contentLength = contentLength();
-      if (contentLength > Integer.MAX_VALUE) {
-        throw new IOException("Cannot buffer entire body for content length: " + contentLength);
-      }
-
-      BufferedSource source = source();
-      byte[] bytes;
-      try {
-        bytes = source.readByteArray();
-      } finally {
-        Util.closeQuietly(source);
-      }
-      if (contentLength != -1 && contentLength != bytes.length) {
-        throw new IOException("Content-Length and stream length disagree");
-      }
-      return bytes;
-    }
-
-    /**
-     * Returns the response as a character stream decoded with the charset
-     * of the Content-Type header. If that header is either absent or lacks a
-     * charset, this will attempt to decode the response body as UTF-8.
-     */
-    public final Reader charStream() {
-      Reader r = reader;
-      return r != null ? r : (reader = new InputStreamReader(byteStream(), charset()));
-    }
-
-    /**
-     * Returns the response as a string decoded with the charset of the
-     * Content-Type header. If that header is either absent or lacks a charset,
-     * this will attempt to decode the response body as UTF-8.
-     */
-    public final String string() throws IOException {
-      return new String(bytes(), charset().name());
-    }
-
-    private Charset charset() {
-      MediaType contentType = contentType();
-      return contentType != null ? contentType.charset(UTF_8) : UTF_8;
-    }
-
-    @Override public void close() throws IOException {
-      source().close();
-    }
   }
 
   /**
@@ -261,28 +216,6 @@ public final class Response {
         + '}';
   }
 
-  public interface Callback {
-    /**
-     * Called when the request could not be executed due to cancellation, a
-     * connectivity problem or timeout. Because networks can fail during an
-     * exchange, it is possible that the remote server accepted the request
-     * before the failure.
-     */
-    void onFailure(Failure failure);
-
-    /**
-     * Called when the HTTP response was successfully returned by the remote
-     * server. The callback may proceed to read the response body with the
-     * response's {@link #body} method.
-     *
-     * <p>Note that transport-layer success (receiving a HTTP response code,
-     * headers and body) does not necessarily indicate application-layer
-     * success: {@code response} may still indicate an unhappy HTTP response
-     * code like 404 or 500.
-     */
-    void onResponse(Response response) throws IOException;
-  }
-
   public static class Builder {
     private Request request;
     private Protocol protocol;
@@ -290,8 +223,10 @@ public final class Response {
     private String message;
     private Handshake handshake;
     private Headers.Builder headers;
-    private Body body;
-    private Response redirectedBy;
+    private ResponseBody body;
+    private Response networkResponse;
+    private Response cacheResponse;
+    private Response priorResponse;
 
     public Builder() {
       headers = new Headers.Builder();
@@ -305,7 +240,9 @@ public final class Response {
       this.handshake = response.handshake;
       this.headers = response.headers.newBuilder();
       this.body = response.body;
-      this.redirectedBy = response.redirectedBy;
+      this.networkResponse = response.networkResponse;
+      this.cacheResponse = response.cacheResponse;
+      this.priorResponse = response.priorResponse;
     }
 
     public Builder request(Request request) {
@@ -362,19 +299,45 @@ public final class Response {
       return this;
     }
 
-    public Builder body(Body body) {
+    public Builder body(ResponseBody body) {
       this.body = body;
       return this;
     }
 
-    // TODO: move out of public API
-    public Builder setResponseSource(ResponseSource responseSource) {
-      return header(OkHeaders.RESPONSE_SOURCE, responseSource + " " + code);
+    public Builder networkResponse(Response networkResponse) {
+      if (networkResponse != null) checkSupportResponse("networkResponse", networkResponse);
+      this.networkResponse = networkResponse;
+      return this;
     }
 
-    public Builder redirectedBy(Response redirectedBy) {
-      this.redirectedBy = redirectedBy;
+    public Builder cacheResponse(Response cacheResponse) {
+      if (cacheResponse != null) checkSupportResponse("cacheResponse", cacheResponse);
+      this.cacheResponse = cacheResponse;
       return this;
+    }
+
+    private void checkSupportResponse(String name, Response response) {
+      if (response.body != null) {
+        throw new IllegalArgumentException(name + ".body != null");
+      } else if (response.networkResponse != null) {
+        throw new IllegalArgumentException(name + ".networkResponse != null");
+      } else if (response.cacheResponse != null) {
+        throw new IllegalArgumentException(name + ".cacheResponse != null");
+      } else if (response.priorResponse != null) {
+        throw new IllegalArgumentException(name + ".priorResponse != null");
+      }
+    }
+
+    public Builder priorResponse(Response priorResponse) {
+      if (priorResponse != null) checkPriorResponse(priorResponse);
+      this.priorResponse = priorResponse;
+      return this;
+    }
+
+    private void checkPriorResponse(Response response) {
+      if (response.body != null) {
+        throw new IllegalArgumentException("priorResponse.body != null");
+      }
     }
 
     public Response build() {

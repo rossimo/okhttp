@@ -55,6 +55,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -65,6 +66,7 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import okio.Buffer;
 import okio.BufferedSink;
+import okio.BufferedSource;
 import okio.ByteString;
 import okio.Okio;
 
@@ -93,13 +95,11 @@ public final class MockWebServer {
 
   private static final Logger logger = Logger.getLogger(MockWebServer.class.getName());
 
-  private final BlockingQueue<RecordedRequest> requestQueue =
-      new LinkedBlockingQueue<RecordedRequest>();
+  private final BlockingQueue<RecordedRequest> requestQueue = new LinkedBlockingQueue<>();
 
   /** All map values are Boolean.TRUE. (Collections.newSetFromMap isn't available in Froyo) */
-  private final Map<Socket, Boolean> openClientSockets = new ConcurrentHashMap<Socket, Boolean>();
-  private final Map<SpdyConnection, Boolean> openSpdyConnections
-      = new ConcurrentHashMap<SpdyConnection, Boolean>();
+  private final Map<Socket, Boolean> openClientSockets = new ConcurrentHashMap<>();
+  private final Map<SpdyConnection, Boolean> openSpdyConnections = new ConcurrentHashMap<>();
   private final AtomicInteger requestCount = new AtomicInteger();
   private int bodyLimit = Integer.MAX_VALUE;
   private ServerSocket serverSocket;
@@ -224,10 +224,28 @@ public final class MockWebServer {
 
   /**
    * Awaits the next HTTP request, removes it, and returns it. Callers should
-   * use this to verify the request was sent as intended.
+   * use this to verify the request was sent as intended. This method will block until the
+   * request is available, possibly forever.
+   *
+   * @return the head of the request queue
    */
   public RecordedRequest takeRequest() throws InterruptedException {
     return requestQueue.take();
+  }
+
+  /**
+   * Awaits the next HTTP request (waiting up to the
+   * specified wait time if necessary), removes it, and returns it. Callers should
+   * use this to verify the request was sent as intended within the given time.
+   *
+   * @param timeout how long to wait before giving up, in units of
+  *        {@code unit}
+   * @param unit a {@code TimeUnit} determining how to interpret the
+   *        {@code timeout} parameter
+   * @return the head of the request queue
+   */
+  public RecordedRequest takeRequest(int timeout, TimeUnit unit) throws InterruptedException {
+    return requestQueue.poll(timeout, unit);
   }
 
   /**
@@ -473,7 +491,7 @@ public final class MockWebServer {
       return null; // no request because the stream is exhausted
     }
 
-    List<String> headers = new ArrayList<String>();
+    List<String> headers = new ArrayList<>();
     long contentLength = -1;
     boolean chunked = false;
     boolean expectContinue = false;
@@ -503,10 +521,10 @@ public final class MockWebServer {
 
     boolean hasBody = false;
     TruncatingOutputStream requestBody = new TruncatingOutputStream();
-    List<Integer> chunkSizes = new ArrayList<Integer>();
+    List<Integer> chunkSizes = new ArrayList<>();
     MockResponse throttlePolicy = dispatcher.peek();
     if (contentLength != -1) {
-      hasBody = true;
+      hasBody = contentLength > 0;
       throttledTransfer(throttlePolicy, in, requestBody, contentLength);
     } else if (chunked) {
       hasBody = true;
@@ -670,7 +688,7 @@ public final class MockWebServer {
 
     private RecordedRequest readRequest(SpdyStream stream) throws IOException {
       List<Header> spdyHeaders = stream.getRequestHeaders();
-      List<String> httpHeaders = new ArrayList<String>();
+      List<String> httpHeaders = new ArrayList<>();
       String method = "<:method omitted>";
       String path = "<:path omitted>";
       String version = protocol == Protocol.SPDY_3 ? "<:version omitted>" : "HTTP/1.1";
@@ -688,25 +706,21 @@ public final class MockWebServer {
         }
       }
 
-      InputStream bodyIn = Okio.buffer(stream.getSource()).inputStream();
-      ByteArrayOutputStream bodyOut = new ByteArrayOutputStream();
-      byte[] buffer = new byte[8192];
-      int count;
-      while ((count = bodyIn.read(buffer)) != -1) {
-        bodyOut.write(buffer, 0, count);
-      }
+      BufferedSource bodyIn = Okio.buffer(stream.getSource());
+      byte[] bodyOut = bodyIn.readByteArray();
       bodyIn.close();
+
       String requestLine = method + ' ' + path + ' ' + version;
       List<Integer> chunkSizes = Collections.emptyList(); // No chunked encoding for SPDY.
-      return new RecordedRequest(requestLine, httpHeaders, chunkSizes, bodyOut.size(),
-          bodyOut.toByteArray(), sequenceNumber.getAndIncrement(), socket);
+      return new RecordedRequest(requestLine, httpHeaders, chunkSizes, bodyOut.length,
+          bodyOut, sequenceNumber.getAndIncrement(), socket);
     }
 
     private void writeResponse(SpdyStream stream, MockResponse response) throws IOException {
       if (response.getSocketPolicy() == SocketPolicy.NO_RESPONSE) {
         return;
       }
-      List<Header> spdyHeaders = new ArrayList<Header>();
+      List<Header> spdyHeaders = new ArrayList<>();
       String[] statusParts = response.getStatus().split(" ", 2);
       if (statusParts.length != 2) {
         throw new AssertionError("Unexpected status: " + response.getStatus());
@@ -763,7 +777,7 @@ public final class MockWebServer {
 
     private void pushPromises(SpdyStream stream, List<PushPromise> promises) throws IOException {
       for (PushPromise pushPromise : promises) {
-        List<Header> pushedHeaders = new ArrayList<Header>();
+        List<Header> pushedHeaders = new ArrayList<>();
         pushedHeaders.add(new Header(stream.getConnection().getProtocol() == Protocol.SPDY_3
             ? Header.TARGET_HOST
             : Header.TARGET_AUTHORITY, getUrl(pushPromise.getPath()).getHost()));

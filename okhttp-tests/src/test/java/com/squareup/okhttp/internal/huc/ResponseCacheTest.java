@@ -18,10 +18,10 @@ package com.squareup.okhttp.internal.huc;
 
 import com.squareup.okhttp.AbstractResponseCache;
 import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.ResponseSource;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.SslContextBuilder;
-import com.squareup.okhttp.internal.http.OkHeaders;
+import com.squareup.okhttp.internal.http.HttpDate;
 import com.squareup.okhttp.mockwebserver.MockResponse;
 import com.squareup.okhttp.mockwebserver.MockWebServer;
 import com.squareup.okhttp.mockwebserver.RecordedRequest;
@@ -112,7 +112,7 @@ public final class ResponseCacheTest {
 
     client = new OkHttpClient();
     cache = new InMemoryResponseCache();
-    ResponseCache.setDefault(cache);
+    Internal.instance.setCache(client, new CacheAdapter(cache));
   }
 
   @After public void tearDown() throws Exception {
@@ -120,20 +120,7 @@ public final class ResponseCacheTest {
   }
 
   private HttpURLConnection openConnection(URL url) {
-    return client.open(url);
-  }
-
-  @Test public void responseCacheAccessWithOkHttpMember() throws IOException {
-    ResponseCache.setDefault(null);
-    Internal.instance.setResponseCache(client, cache);
-    assertTrue(Internal.instance.internalCache(client) instanceof CacheAdapter);
-  }
-
-  @Test public void responseCacheAccessWithGlobalDefault() throws IOException {
-    ResponseCache.setDefault(cache);
-    Internal.instance.setResponseCache(client, null);
-    assertNull(Internal.instance.internalCache(client));
-    assertNull(client.getCache());
+    return new OkUrlFactory(client).open(url);
   }
 
   @Test public void responseCachingAndInputStreamSkipWithFixedLength() throws IOException {
@@ -215,8 +202,8 @@ public final class ResponseCacheTest {
     server.enqueue(new MockResponse().setBody("ABC"));
     server.enqueue(new MockResponse().setBody("DEF"));
 
-    Internal.instance.setResponseCache(client,
-        new InsecureResponseCache(new InMemoryResponseCache()));
+    Internal.instance.setCache(client,
+        new CacheAdapter(new InsecureResponseCache(new InMemoryResponseCache())));
 
     HttpsURLConnection connection1 = (HttpsURLConnection) openConnection(server.getUrl("/"));
     connection1.setSSLSocketFactory(sslContext.getSocketFactory());
@@ -332,13 +319,13 @@ public final class ResponseCacheTest {
 
     final AtomicReference<Map<String, List<String>>> requestHeadersRef =
         new AtomicReference<Map<String, List<String>>>();
-    Internal.instance.setResponseCache(client, new AbstractResponseCache() {
+    Internal.instance.setCache(client, new CacheAdapter(new AbstractResponseCache() {
       @Override public CacheResponse get(URI uri, String requestMethod,
           Map<String, List<String>> requestHeaders) throws IOException {
         requestHeadersRef.set(requestHeaders);
         return null;
       }
-    });
+    }));
 
     URL url = server.getUrl("/");
     URLConnection urlConnection = openConnection(url);
@@ -925,7 +912,7 @@ public final class ResponseCacheTest {
     connection.setIfModifiedSince(since.getTime());
     assertEquals("A", readAscii(connection));
     RecordedRequest request = server.takeRequest();
-    assertTrue(request.getHeaders().contains("If-Modified-Since: " + formatDate(since)));
+    assertTrue(request.getHeaders().contains("If-Modified-Since: " + HttpDate.format(since)));
   }
 
   @Test public void clientSuppliedConditionWithoutCachedResult() throws Exception {
@@ -1227,9 +1214,6 @@ public final class ResponseCacheTest {
     URLConnection connection = openConnection(server.getUrl("/"));
     connection.addRequestProperty("Cache-Control", "only-if-cached");
     assertEquals("A", readAscii(connection));
-
-    String source = connection.getHeaderField(OkHeaders.RESPONSE_SOURCE);
-    assertEquals(ResponseSource.CACHE + " 200", source);
   }
 
   @Test public void responseSourceHeaderConditionalCacheFetched() throws IOException {
@@ -1243,9 +1227,6 @@ public final class ResponseCacheTest {
     assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
     HttpURLConnection connection = openConnection(server.getUrl("/"));
     assertEquals("B", readAscii(connection));
-
-    String source = connection.getHeaderField(OkHeaders.RESPONSE_SOURCE);
-    assertEquals(ResponseSource.CONDITIONAL_CACHE + " 200", source);
   }
 
   @Test public void responseSourceHeaderConditionalCacheNotFetched() throws IOException {
@@ -1257,9 +1238,6 @@ public final class ResponseCacheTest {
     assertEquals("A", readAscii(openConnection(server.getUrl("/"))));
     HttpURLConnection connection = openConnection(server.getUrl("/"));
     assertEquals("A", readAscii(connection));
-
-    String source = connection.getHeaderField(OkHeaders.RESPONSE_SOURCE);
-    assertEquals(ResponseSource.CONDITIONAL_CACHE + " 304", source);
   }
 
   @Test public void responseSourceHeaderFetched() throws IOException {
@@ -1267,9 +1245,6 @@ public final class ResponseCacheTest {
 
     URLConnection connection = openConnection(server.getUrl("/"));
     assertEquals("A", readAscii(connection));
-
-    String source = connection.getHeaderField(OkHeaders.RESPONSE_SOURCE);
-    assertEquals(ResponseSource.NETWORK + " 200", source);
   }
 
   @Test public void emptyResponseHeaderNameFromCacheIsLenient() throws Exception {
@@ -1288,13 +1263,7 @@ public final class ResponseCacheTest {
    * future.
    */
   private String formatDate(long delta, TimeUnit timeUnit) {
-    return formatDate(new Date(System.currentTimeMillis() + timeUnit.toMillis(delta)));
-  }
-
-  private String formatDate(Date date) {
-    DateFormat rfc1123 = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US);
-    rfc1123.setTimeZone(TimeZone.getTimeZone("GMT"));
-    return rfc1123.format(date);
+    return HttpDate.format(new Date(System.currentTimeMillis() + timeUnit.toMillis(delta)));
   }
 
   private void addRequestBodyIfNecessary(String requestMethod, HttpURLConnection invalidate)
@@ -1414,8 +1383,6 @@ public final class ResponseCacheTest {
     }
     assertEquals(504, connection.getResponseCode());
     assertEquals(-1, connection.getErrorStream().read());
-    assertEquals(ResponseSource.NONE + " 504",
-        connection.getHeaderField(OkHeaders.RESPONSE_SOURCE));
   }
 
   enum TransferKind {

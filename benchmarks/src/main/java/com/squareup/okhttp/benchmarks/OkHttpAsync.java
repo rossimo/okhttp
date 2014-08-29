@@ -15,11 +15,12 @@
  */
 package com.squareup.okhttp.benchmarks;
 
+import com.squareup.okhttp.Callback;
 import com.squareup.okhttp.Dispatcher;
-import com.squareup.okhttp.Failure;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Request;
 import com.squareup.okhttp.Response;
+import com.squareup.okhttp.ResponseBody;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import java.io.IOException;
 import java.net.URL;
@@ -38,7 +39,7 @@ class OkHttpAsync implements HttpClient {
   private final AtomicInteger requestsInFlight = new AtomicInteger();
 
   private OkHttpClient client;
-  private Response.Callback callback;
+  private Callback callback;
   private int concurrencyLevel;
   private int targetBacklog;
 
@@ -63,13 +64,13 @@ class OkHttpAsync implements HttpClient {
       client.setHostnameVerifier(hostnameVerifier);
     }
 
-    callback = new Response.Callback() {
-      @Override public void onFailure(Failure failure) {
-        System.out.println("Failed: " + failure.exception());
+    callback = new Callback() {
+      @Override public void onFailure(Request request, IOException e) {
+        System.out.println("Failed: " + e);
       }
 
       @Override public void onResponse(Response response) throws IOException {
-        Response.Body body = response.body();
+        ResponseBody body = response.body();
         long total = SynchronousHttpClient.readAllAndClose(body.byteStream());
         long finish = System.nanoTime();
         if (VERBOSE) {

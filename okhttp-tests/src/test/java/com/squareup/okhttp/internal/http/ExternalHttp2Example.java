@@ -17,6 +17,7 @@
 package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.internal.Util;
 import java.io.BufferedReader;
@@ -31,9 +32,10 @@ import static com.squareup.okhttp.internal.http.OkHeaders.SELECTED_PROTOCOL;
 
 public final class ExternalHttp2Example {
   public static void main(String[] args) throws Exception {
-    URL url = new URL("https://http2.iijplus.jp/push/test1");
-    HttpsURLConnection connection = (HttpsURLConnection) new OkHttpClient()
-        .setProtocols(Util.immutableList(Protocol.HTTP_2, Protocol.HTTP_1_1))
+    URL url = new URL("https://twitter.com");
+    OkHttpClient client = new OkHttpClient()
+        .setProtocols(Util.immutableList(Protocol.HTTP_2, Protocol.HTTP_1_1));
+    HttpsURLConnection connection = (HttpsURLConnection) new OkUrlFactory(client)
         .open(url);
 
     connection.setHostnameVerifier(new HostnameVerifier() {

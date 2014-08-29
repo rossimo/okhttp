@@ -3,19 +3,24 @@ package com.squareup.okhttp.guide;
 import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
 import java.io.IOException;
 
 public class PostExample {
+  public static final MediaType JSON
+      = MediaType.parse("application/json; charset=utf-8");
+
   OkHttpClient client = new OkHttpClient();
 
-  void run() throws IOException {
-    String json = bowlingJson("Jesse", "Jake");
-    Request.Body body = Request.Body.create(MediaType.parse("application/json"), json);
-    Request request = new Request.Builder().url("http://www.roundsapp.com/post").post(body).build();
-
+  String post(String url, String json) throws IOException {
+    RequestBody body = RequestBody.create(JSON, json);
+    Request request = new Request.Builder()
+        .url(url)
+        .post(body)
+        .build();
     Response response = client.newCall(request).execute();
-    System.out.println(response.body().string());
+    return response.body().string();
   }
 
   String bowlingJson(String player1, String player2) {
@@ -31,6 +36,9 @@ public class PostExample {
   }
 
   public static void main(String[] args) throws IOException {
-    new PostExample().run();
+    PostExample example = new PostExample();
+    String json = example.bowlingJson("Jesse", "Jake");
+    String response = example.post("http://www.roundsapp.com/post", json);
+    System.out.println(response);
   }
 }

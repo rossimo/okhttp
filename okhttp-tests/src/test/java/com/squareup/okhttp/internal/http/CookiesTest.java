@@ -17,14 +17,10 @@
 package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.mockwebserver.MockResponse;
 import com.squareup.okhttp.mockwebserver.MockWebServer;
 import com.squareup.okhttp.mockwebserver.RecordedRequest;
-
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
 import java.io.IOException;
 import java.net.CookieHandler;
 import java.net.CookieManager;
@@ -37,6 +33,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import static java.net.CookiePolicy.ACCEPT_ORIGINAL_SERVER;
 import static org.junit.Assert.assertEquals;
@@ -81,7 +80,7 @@ public class CookiesTest {
     assertEquals(null, cookie.getComment());
     assertEquals(null, cookie.getCommentURL());
     assertEquals(false, cookie.getDiscard());
-    assertEquals(server.getCookieDomain(), cookie.getDomain());
+    assertTrue(server.getCookieDomain().equalsIgnoreCase(cookie.getDomain()));
     assertTrue(cookie.getMaxAge() > 100000000000L);
     assertEquals("/path", cookie.getPath());
     assertEquals(true, cookie.getSecure());
@@ -111,7 +110,7 @@ public class CookiesTest {
     assertEquals("this cookie is delicious", cookie.getComment());
     assertEquals(null, cookie.getCommentURL());
     assertEquals(false, cookie.getDiscard());
-    assertEquals(server.getCookieDomain(), cookie.getDomain());
+    assertTrue(server.getCookieDomain().equalsIgnoreCase(cookie.getDomain()));
     assertEquals(60, cookie.getMaxAge());
     assertEquals("/path", cookie.getPath());
     assertEquals(true, cookie.getSecure());
@@ -144,7 +143,7 @@ public class CookiesTest {
     assertEquals("this cookie is delicious", cookie.getComment());
     assertEquals("http://google.com/", cookie.getCommentURL());
     assertEquals(true, cookie.getDiscard());
-    assertEquals(server.getCookieDomain(), cookie.getDomain());
+    assertTrue(server.getCookieDomain().equalsIgnoreCase(cookie.getDomain()));
     assertEquals(60, cookie.getMaxAge());
     assertEquals("/path", cookie.getPath());
     assertEquals("80,443," + server.getPort(), cookie.getPortlist());
@@ -178,7 +177,7 @@ public class CookiesTest {
     assertEquals("this cookie is delicious", cookie.getComment());
     assertEquals("http://google.com/", cookie.getCommentURL());
     assertEquals(true, cookie.getDiscard());
-    assertEquals(server.getCookieDomain(), cookie.getDomain());
+    assertTrue(server.getCookieDomain().equalsIgnoreCase(cookie.getDomain()));
     assertEquals(60, cookie.getMaxAge());
     assertEquals("/path", cookie.getPath());
     assertEquals("80,443," + server.getPort(), cookie.getPortlist());
@@ -253,13 +252,13 @@ public class CookiesTest {
    * getRequestProperties}.
    */
   @Test public void testHeadersSentToCookieHandler() throws IOException, InterruptedException {
-    final Map<String, List<String>> cookieHandlerHeaders = new HashMap<String, List<String>>();
+    final Map<String, List<String>> cookieHandlerHeaders = new HashMap<>();
     CookieHandler.setDefault(new CookieManager() {
       @Override
       public Map<String, List<String>> get(URI uri,
           Map<String, List<String>> requestHeaders) throws IOException {
         cookieHandlerHeaders.putAll(requestHeaders);
-        Map<String, List<String>> result = new HashMap<String, List<String>>();
+        Map<String, List<String>> result = new HashMap<>();
         result.put("Cookie", Collections.singletonList("Bar=bar"));
         result.put("Cookie2", Collections.singletonList("Baz=baz"));
         result.put("Quux", Collections.singletonList("quux"));
@@ -270,7 +269,7 @@ public class CookiesTest {
     server.enqueue(new MockResponse());
     server.play();
 
-    HttpURLConnection connection = client.open(server.getUrl("/"));
+    HttpURLConnection connection = new OkUrlFactory(client).open(server.getUrl("/"));
     assertEquals(Collections.<String, List<String>>emptyMap(),
         connection.getRequestProperties());
 
@@ -309,7 +308,7 @@ public class CookiesTest {
     CookieHandler.setDefault(new CookieManager() {
       @Override public Map<String, List<String>> get(URI uri,
           Map<String, List<String>> requestHeaders) throws IOException {
-        Map<String, List<String>> result = new HashMap<String, List<String>>();
+        Map<String, List<String>> result = new HashMap<>();
         result.put("COOKIE", Collections.singletonList("Bar=bar"));
         result.put("cooKIE2", Collections.singletonList("Baz=baz"));
         return result;
@@ -342,7 +341,7 @@ public class CookiesTest {
   }
 
   private Map<String,List<String>> get(MockWebServer server, String path) throws Exception {
-    URLConnection connection = client.open(server.getUrl(path));
+    URLConnection connection = new OkUrlFactory(client).open(server.getUrl(path));
     Map<String, List<String>> headers = connection.getHeaderFields();
     connection.getInputStream().close();
     return headers;

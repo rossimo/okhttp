@@ -20,9 +20,12 @@ import com.squareup.okhttp.Handshake;
 import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
+import com.squareup.okhttp.ResponseBody;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.internal.Util;
 import com.squareup.okhttp.mockwebserver.MockResponse;
@@ -213,7 +216,7 @@ public class JavaApiConverterTest {
     CacheResponse cacheResponse = new CacheResponse() {
       @Override
       public Map<String, List<String>> getHeaders() throws IOException {
-        Map<String, List<String>> headers = new HashMap<String, List<String>>();
+        Map<String, List<String>> headers = new HashMap<>();
         headers.put(null, Collections.singletonList(statusLine));
         headers.put("xyzzy", Arrays.asList("bar", "baz"));
         return headers;
@@ -248,7 +251,7 @@ public class JavaApiConverterTest {
     SecureCacheResponse cacheResponse = new SecureCacheResponse() {
       @Override
       public Map<String, List<String>> getHeaders() throws IOException {
-        Map<String, List<String>> headers = new HashMap<String, List<String>>();
+        Map<String, List<String>> headers = new HashMap<>();
         headers.put(null, Collections.singletonList(statusLine));
         headers.put("xyzzy", Arrays.asList("bar", "baz"));
         return headers;
@@ -320,7 +323,7 @@ public class JavaApiConverterTest {
   @Test public void createOkRequest_nonNullRequestHeaders() throws Exception {
     URI uri = new URI("https://foo/bar");
 
-    Map<String,List<String>> javaRequestHeaders = new HashMap<String, List<String>>();
+    Map<String,List<String>> javaRequestHeaders = new HashMap<>();
     javaRequestHeaders.put("Foo", Arrays.asList("Bar"));
     Request request = JavaApiConverter.createOkRequest(uri, "POST", javaRequestHeaders);
     assertTrue(request.isHttps());
@@ -339,7 +342,7 @@ public class JavaApiConverterTest {
   @Test public void createOkRequest_nullRequestHeaderKey() throws Exception {
     URI uri = new URI("https://foo/bar");
 
-    Map<String,List<String>> javaRequestHeaders = new HashMap<String, List<String>>();
+    Map<String,List<String>> javaRequestHeaders = new HashMap<>();
     javaRequestHeaders.put(null, Arrays.asList("GET / HTTP 1.1"));
     javaRequestHeaders.put("Foo", Arrays.asList("Bar"));
     Request request = JavaApiConverter.createOkRequest(uri, "POST", javaRequestHeaders);
@@ -432,7 +435,7 @@ public class JavaApiConverterTest {
   }
 
   @Test public void createJavaUrlConnection_responseHeadersOk() throws Exception {
-    Response.Body responseBody = createResponseBody("BodyText");
+    ResponseBody responseBody = createResponseBody("BodyText");
     Response okResponse = new Response.Builder()
         .request(createArbitraryOkRequest())
         .protocol(Protocol.HTTP_1_1)
@@ -609,7 +612,7 @@ public class JavaApiConverterTest {
             .url("http://insecure/request")
             .post(createRequestBody("RequestBody"))
             .build();
-    Response.Body responseBody = createResponseBody("ResponseBody");
+    ResponseBody responseBody = createResponseBody("ResponseBody");
     Response okResponse = createArbitraryOkResponse(okRequest).newBuilder()
         .protocol(Protocol.HTTP_1_1)
         .code(200)
@@ -633,7 +636,7 @@ public class JavaApiConverterTest {
             .url("https://secure/request")
             .post(createRequestBody("RequestBody") )
             .build();
-    Response.Body responseBody = createResponseBody("ResponseBody");
+    ResponseBody responseBody = createResponseBody("ResponseBody");
     Handshake handshake = Handshake.get("SecureCipher", Arrays.<Certificate>asList(SERVER_CERT),
         Arrays.<Certificate>asList(LOCAL_CERT));
     Response okResponse = createArbitraryOkResponse(okRequest).newBuilder()
@@ -672,7 +675,7 @@ public class JavaApiConverterTest {
   }
 
   @Test public void extractOkHeaders() {
-    Map<String, List<String>> javaResponseHeaders = new HashMap<String, List<String>>();
+    Map<String, List<String>> javaResponseHeaders = new HashMap<>();
     javaResponseHeaders.put(null, Arrays.asList("StatusLine"));
     javaResponseHeaders.put("key1", Arrays.asList("value1_1", "value1_2"));
     javaResponseHeaders.put("key2", Arrays.asList("value2"));
@@ -684,7 +687,7 @@ public class JavaApiConverterTest {
   }
 
   @Test public void extractStatusLine() {
-    Map<String, List<String>> javaResponseHeaders = new HashMap<String, List<String>>();
+    Map<String, List<String>> javaResponseHeaders = new HashMap<>();
     javaResponseHeaders.put(null, Arrays.asList("StatusLine"));
     javaResponseHeaders.put("key1", Arrays.asList("value1_1", "value1_2"));
     javaResponseHeaders.put("key2", Arrays.asList("value2"));
@@ -724,7 +727,7 @@ public class JavaApiConverterTest {
 
     @Override
     public HttpURLConnection open(URL serverUrl) {
-      return client.open(serverUrl);
+      return new OkUrlFactory(client).open(serverUrl);
     }
   }
 
@@ -750,7 +753,7 @@ public class JavaApiConverterTest {
   }
 
   private static <T> Set<T> newSet(List<T> elements) {
-    return new LinkedHashSet<T>(elements);
+    return new LinkedHashSet<>(elements);
   }
 
   private static Request createArbitraryOkRequest() {
@@ -770,14 +773,14 @@ public class JavaApiConverterTest {
     return createArbitraryOkResponse(createArbitraryOkRequest());
   }
 
-  private static Request.Body createRequestBody(String bodyText) {
-    return Request.Body.create(MediaType.parse("text/plain"), bodyText);
+  private static RequestBody createRequestBody(String bodyText) {
+    return RequestBody.create(MediaType.parse("text/plain"), bodyText);
   }
 
-  private static Response.Body createResponseBody(String bodyText) {
+  private static ResponseBody createResponseBody(String bodyText) {
     final Buffer source = new Buffer().writeUtf8(bodyText);
     final long contentLength = source.size();
-    return new Response.Body() {
+    return new ResponseBody() {
       @Override public MediaType contentType() {
         return MediaType.parse("text/plain; charset=utf-8");
       }

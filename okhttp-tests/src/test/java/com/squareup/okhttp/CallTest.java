@@ -16,6 +16,7 @@
 package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.RecordingHostnameVerifier;
+import com.squareup.okhttp.internal.RecordingOkAuthenticator;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.mockwebserver.Dispatcher;
 import com.squareup.okhttp.mockwebserver.MockResponse;
@@ -28,33 +29,46 @@ import java.io.InputStream;
 import java.net.CookieManager;
 import java.net.HttpCookie;
 import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
+import okio.Buffer;
+import okio.BufferedSink;
 import okio.BufferedSource;
+import okio.GzipSink;
+import okio.Okio;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
+import static java.lang.Thread.UncaughtExceptionHandler;
 import static java.net.CookiePolicy.ACCEPT_ORIGINAL_SERVER;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public final class CallTest {
   private MockWebServer server = new MockWebServer();
+  private MockWebServer server2 = new MockWebServer();
   private OkHttpClient client = new OkHttpClient();
   private RecordingCallback callback = new RecordingCallback();
+  private UncaughtExceptionHandler defaultUncaughtExceptionHandler;
 
   private static final SSLContext sslContext = SslContextBuilder.localhost();
   private Cache cache;
@@ -63,11 +77,14 @@ public final class CallTest {
     String tmp = System.getProperty("java.io.tmpdir");
     File cacheDir = new File(tmp, "HttpCache-" + UUID.randomUUID());
     cache = new Cache(cacheDir, Integer.MAX_VALUE);
+    defaultUncaughtExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
   }
 
   @After public void tearDown() throws Exception {
     server.shutdown();
+    server2.shutdown();
     cache.delete();
+    Thread.setDefaultUncaughtExceptionHandler(defaultUncaughtExceptionHandler);
   }
 
   @Test public void get() throws Exception {
@@ -81,6 +98,7 @@ public final class CallTest {
 
     executeSynchronously(request)
         .assertCode(200)
+        .assertSuccessful()
         .assertHeader("Content-Type", "text/plain")
         .assertBody("abc");
 
@@ -91,6 +109,47 @@ public final class CallTest {
     assertNull(recordedRequest.getHeader("Content-Length"));
   }
 
+  @Test public void lazilyEvaluateRequestUrl() throws Exception {
+    server.enqueue(new MockResponse().setBody("abc"));
+    server.play();
+
+    Request request1 = new Request.Builder()
+        .url("foo://bar?baz")
+        .build();
+    Request request2 = request1.newBuilder()
+        .url(server.getUrl("/"))
+        .build();
+    executeSynchronously(request2)
+        .assertCode(200)
+        .assertSuccessful()
+        .assertBody("abc");
+  }
+
+  @Ignore // TODO(jwilson): fix.
+  @Test public void invalidScheme() throws Exception {
+    try {
+      Request request = new Request.Builder()
+          .url("ftp://hostname/path")
+          .build();
+      executeSynchronously(request);
+      fail();
+    } catch (IllegalArgumentException expected) {
+    }
+  }
+
+  @Test public void getReturns500() throws Exception {
+    server.enqueue(new MockResponse().setResponseCode(500));
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .build();
+
+    executeSynchronously(request)
+        .assertCode(500)
+        .assertNotSuccessful();
+  }
+
   @Test public void get_SPDY_3() throws Exception {
     enableProtocol(Protocol.SPDY_3);
     get();
@@ -99,6 +158,17 @@ public final class CallTest {
   @Test public void get_HTTP_2() throws Exception {
     enableProtocol(Protocol.HTTP_2);
     get();
+  }
+
+  @Test public void getWithRequestBody() throws Exception {
+    server.enqueue(new MockResponse());
+    server.play();
+
+    try {
+      new Request.Builder().method("GET", RequestBody.create(MediaType.parse("text/plain"), "abc"));
+      fail();
+    } catch (IllegalArgumentException expected) {
+    }
   }
 
   @Test public void head() throws Exception {
@@ -138,7 +208,7 @@ public final class CallTest {
 
     Request request = new Request.Builder()
         .url(server.getUrl("/"))
-        .post(Request.Body.create(MediaType.parse("text/plain"), "def"))
+        .post(RequestBody.create(MediaType.parse("text/plain"), "def"))
         .build();
 
     executeSynchronously(request)
@@ -228,7 +298,7 @@ public final class CallTest {
 
     Request request = new Request.Builder()
         .url(server.getUrl("/"))
-        .put(Request.Body.create(MediaType.parse("text/plain"), "def"))
+        .put(RequestBody.create(MediaType.parse("text/plain"), "def"))
         .build();
 
     executeSynchronously(request)
@@ -258,7 +328,7 @@ public final class CallTest {
 
     Request request = new Request.Builder()
         .url(server.getUrl("/"))
-        .patch(Request.Body.create(MediaType.parse("text/plain"), "def"))
+        .patch(RequestBody.create(MediaType.parse("text/plain"), "def"))
         .build();
 
     executeSynchronously(request)
@@ -280,6 +350,23 @@ public final class CallTest {
   @Test public void patch_HTTP_2() throws Exception {
     enableProtocol(Protocol.HTTP_2);
     patch();
+  }
+
+  @Test public void unspecifiedRequestBodyContentTypeDoesNotGetDefault() throws Exception {
+    server.enqueue(new MockResponse());
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .method("POST", RequestBody.create(null, "abc"))
+        .build();
+
+    executeSynchronously(request).assertCode(200);
+
+    RecordedRequest recordedRequest = server.takeRequest();
+    assertEquals(null, recordedRequest.getHeader("Content-Type"));
+    assertEquals("3", recordedRequest.getHeader("Content-Length"));
+    assertEquals("abc", recordedRequest.getUtf8Body());
   }
 
   @Test public void illegalToExecuteTwice() throws Exception {
@@ -364,6 +451,41 @@ public final class CallTest {
     assertTrue(server.takeRequest().getHeaders().contains("User-Agent: AsyncApiTest"));
   }
 
+  @Test public void onResponseThrowsIsHandledByUncaughtExceptionHandler() throws Exception {
+    server.enqueue(new MockResponse());
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .build();
+
+    final AtomicReference<Throwable> uncaughtExceptionRef = new AtomicReference<>();
+    final CountDownLatch latch = new CountDownLatch(1);
+
+    Thread.setDefaultUncaughtExceptionHandler(new UncaughtExceptionHandler() {
+      @Override public void uncaughtException(Thread thread, Throwable throwable) {
+        uncaughtExceptionRef.set(throwable);
+        latch.countDown();
+      }
+    });
+
+    client.newCall(request).enqueue(new Callback() {
+      @Override public void onFailure(Request request, IOException e) {
+        fail();
+      }
+
+      @Override public void onResponse(Response response) throws IOException {
+        throw new IOException("a");
+      }
+    });
+
+    latch.await();
+    Throwable uncaughtException = uncaughtExceptionRef.get();
+    assertEquals(RuntimeException.class, uncaughtException.getClass());
+    assertEquals(IOException.class, uncaughtException.getCause().getClass());
+    assertEquals("a", uncaughtException.getCause().getMessage());
+  }
+
   @Test public void connectionPooling() throws Exception {
     server.enqueue(new MockResponse().setBody("abc"));
     server.enqueue(new MockResponse().setBody("def"));
@@ -410,8 +532,8 @@ public final class CallTest {
     server.play();
 
     Request request = new Request.Builder().url(server.getUrl("/a")).build();
-    client.newCall(request).enqueue(new Response.Callback() {
-      @Override public void onFailure(Failure failure) {
+    client.newCall(request).enqueue(new Callback() {
+      @Override public void onFailure(Request request, IOException e) {
         throw new AssertionError();
       }
 
@@ -544,7 +666,7 @@ public final class CallTest {
 
     Request request = new Request.Builder()
         .url(server.getUrl("/"))
-        .post(Request.Body.create(MediaType.parse("text/plain"), "def"))
+        .post(RequestBody.create(MediaType.parse("text/plain"), "def"))
         .build();
     client.newCall(request).enqueue(callback);
 
@@ -571,7 +693,7 @@ public final class CallTest {
 
     Request request2 = new Request.Builder()
         .url(server.getUrl("/"))
-        .post(Request.Body.create(MediaType.parse("text/plain"), "body!"))
+        .post(RequestBody.create(MediaType.parse("text/plain"), "body!"))
         .build();
     Response response2 = client.newCall(request2).execute();
     assertEquals("def", response2.body().string());
@@ -588,22 +710,118 @@ public final class CallTest {
     assertEquals(0, post2.getSequenceNumber());
   }
 
+  @Test public void cacheHit() throws Exception {
+    server.enqueue(new MockResponse()
+        .addHeader("ETag: v1")
+        .addHeader("Cache-Control: max-age=60")
+        .addHeader("Vary: Accept-Charset")
+        .setBody("A"));
+    server.play();
+
+    client.setCache(cache);
+
+    // Store a response in the cache.
+    URL url = server.getUrl("/");
+    Request cacheStoreRequest = new Request.Builder()
+        .url(url)
+        .addHeader("Accept-Language", "fr-CA")
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    executeSynchronously(cacheStoreRequest)
+        .assertCode(200)
+        .assertBody("A");
+    assertNull(server.takeRequest().getHeader("If-None-Match"));
+
+    // Hit that stored response.
+    Request cacheHitRequest = new Request.Builder()
+        .url(url)
+        .addHeader("Accept-Language", "en-US") // Different, but Vary says it doesn't matter.
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    RecordedResponse cacheHit = executeSynchronously(cacheHitRequest);
+
+    // Check the merged response. The request is the application's original request.
+    cacheHit.assertCode(200)
+        .assertBody("A")
+        .assertHeader("ETag", "v1")
+        .assertRequestUrl(cacheStoreRequest.url())
+        .assertRequestHeader("Accept-Language", "en-US")
+        .assertRequestHeader("Accept-Charset", "UTF-8");
+
+    // Check the cached response. Its request contains only the saved Vary headers.
+    cacheHit.cacheResponse()
+        .assertCode(200)
+        .assertHeader("ETag", "v1")
+        .assertRequestMethod("GET")
+        .assertRequestUrl(cacheStoreRequest.url())
+        .assertRequestHeader("Accept-Language")
+        .assertRequestHeader("Accept-Charset", "UTF-8");
+
+    cacheHit.assertNoNetworkResponse();
+  }
+
   @Test public void conditionalCacheHit() throws Exception {
-    server.enqueue(new MockResponse().setBody("A").addHeader("ETag: v1"));
+    server.enqueue(new MockResponse()
+        .addHeader("ETag: v1")
+        .addHeader("Vary: Accept-Charset")
+        .addHeader("Donut: a")
+        .setBody("A"));
     server.enqueue(new MockResponse()
         .clearHeaders()
+        .addHeader("Donut: b")
         .setResponseCode(HttpURLConnection.HTTP_NOT_MODIFIED));
     server.play();
 
     client.setCache(cache);
 
-    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build())
-        .assertCode(200).assertBody("A");
+    // Store a response in the cache.
+    URL url = server.getUrl("/");
+    Request cacheStoreRequest = new Request.Builder()
+        .url(url)
+        .addHeader("Accept-Language", "fr-CA")
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    executeSynchronously(cacheStoreRequest)
+        .assertCode(200)
+        .assertHeader("Donut", "a")
+        .assertBody("A");
     assertNull(server.takeRequest().getHeader("If-None-Match"));
 
-    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build())
-        .assertCode(200).assertBody("A");
+    // Hit that stored response.
+    Request cacheHitRequest = new Request.Builder()
+        .url(url)
+        .addHeader("Accept-Language", "en-US") // Different, but Vary says it doesn't matter.
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    RecordedResponse cacheHit = executeSynchronously(cacheHitRequest);
     assertEquals("v1", server.takeRequest().getHeader("If-None-Match"));
+
+    // Check the merged response. The request is the application's original request.
+    cacheHit.assertCode(200)
+        .assertBody("A")
+        .assertHeader("Donut", "b")
+        .assertRequestUrl(cacheStoreRequest.url())
+        .assertRequestHeader("Accept-Language", "en-US")
+        .assertRequestHeader("Accept-Charset", "UTF-8")
+        .assertRequestHeader("If-None-Match"); // No If-None-Match on the user's request.
+
+    // Check the cached response. Its request contains only the saved Vary headers.
+    cacheHit.cacheResponse()
+        .assertCode(200)
+        .assertHeader("Donut", "a")
+        .assertHeader("ETag", "v1")
+        .assertRequestUrl(cacheStoreRequest.url())
+        .assertRequestHeader("Accept-Language") // No Vary on Accept-Language.
+        .assertRequestHeader("Accept-Charset", "UTF-8") // Because of Vary on Accept-Charset.
+        .assertRequestHeader("If-None-Match"); // This wasn't present in the original request.
+
+    // Check the network response. It has the caller's request, plus some caching headers.
+    cacheHit.networkResponse()
+        .assertCode(304)
+        .assertHeader("Donut", "b")
+        .assertRequestHeader("Accept-Language", "en-US")
+        .assertRequestHeader("Accept-Charset", "UTF-8")
+        .assertRequestHeader("If-None-Match", "v1"); // If-None-Match in the validation request.
   }
 
   @Test public void conditionalCacheHit_Async() throws Exception {
@@ -631,19 +849,55 @@ public final class CallTest {
   }
 
   @Test public void conditionalCacheMiss() throws Exception {
-    server.enqueue(new MockResponse().setBody("A").addHeader("ETag: v1"));
-    server.enqueue(new MockResponse().setBody("B"));
+    server.enqueue(new MockResponse()
+        .addHeader("ETag: v1")
+        .addHeader("Vary: Accept-Charset")
+        .addHeader("Donut: a")
+        .setBody("A"));
+    server.enqueue(new MockResponse()
+        .addHeader("Donut: b")
+        .setBody("B"));
     server.play();
 
     client.setCache(cache);
 
-    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build())
-        .assertCode(200).assertBody("A");
+    Request cacheStoreRequest = new Request.Builder()
+        .url(server.getUrl("/"))
+        .addHeader("Accept-Language", "fr-CA")
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    executeSynchronously(cacheStoreRequest)
+        .assertCode(200)
+        .assertBody("A");
     assertNull(server.takeRequest().getHeader("If-None-Match"));
 
-    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build())
-        .assertCode(200).assertBody("B");
+    Request cacheMissRequest = new Request.Builder()
+        .url(server.getUrl("/"))
+        .addHeader("Accept-Language", "en-US") // Different, but Vary says it doesn't matter.
+        .addHeader("Accept-Charset", "UTF-8")
+        .build();
+    RecordedResponse cacheHit = executeSynchronously(cacheMissRequest);
     assertEquals("v1", server.takeRequest().getHeader("If-None-Match"));
+
+    // Check the user response. It has the application's original request.
+    cacheHit.assertCode(200)
+        .assertBody("B")
+        .assertHeader("Donut", "b")
+        .assertRequestUrl(cacheStoreRequest.url());
+
+    // Check the cache response. Even though it's a miss, we used the cache.
+    cacheHit.cacheResponse()
+        .assertCode(200)
+        .assertHeader("Donut", "a")
+        .assertHeader("ETag", "v1")
+        .assertRequestUrl(cacheStoreRequest.url());
+
+    // Check the network response. It has the network request, plus caching headers.
+    cacheHit.networkResponse()
+        .assertCode(200)
+        .assertHeader("Donut", "b")
+        .assertRequestHeader("If-None-Match", "v1")  // If-None-Match in the validation request.
+        .assertRequestUrl(cacheStoreRequest.url());
   }
 
   @Test public void conditionalCacheMiss_Async() throws Exception {
@@ -668,6 +922,21 @@ public final class CallTest {
     assertEquals("v1", server.takeRequest().getHeader("If-None-Match"));
   }
 
+  @Test public void onlyIfCachedReturns504WhenNotCached() throws Exception {
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .header("Cache-Control", "only-if-cached")
+        .build();
+
+    executeSynchronously(request)
+        .assertCode(504)
+        .assertBody("")
+        .assertNoNetworkResponse()
+        .assertNoCacheResponse();
+  }
+
   @Test public void redirect() throws Exception {
     server.enqueue(new MockResponse()
         .setResponseCode(301)
@@ -685,10 +954,10 @@ public final class CallTest {
     executeSynchronously(new Request.Builder().url(server.getUrl("/a")).build())
         .assertCode(200)
         .assertBody("C")
-        .redirectedBy()
+        .priorResponse()
         .assertCode(302)
         .assertHeader("Test", "Redirect from /b to /c")
-        .redirectedBy()
+        .priorResponse()
         .assertCode(301)
         .assertHeader("Test", "Redirect from /a to /b");
 
@@ -707,7 +976,7 @@ public final class CallTest {
 
     Response response = client.newCall(new Request.Builder()
         .url(server.getUrl("/page1"))
-        .post(Request.Body.create(MediaType.parse("text/plain"), "Request Body"))
+        .post(RequestBody.create(MediaType.parse("text/plain"), "Request Body"))
         .build()).execute();
     assertEquals("Page 2", response.body().string());
 
@@ -720,13 +989,12 @@ public final class CallTest {
   }
 
   @Test public void redirectsDoNotIncludeTooManyCookies() throws Exception {
-    MockWebServer redirectTarget = new MockWebServer();
-    redirectTarget.enqueue(new MockResponse().setBody("Page 2"));
-    redirectTarget.play();
+    server2.enqueue(new MockResponse().setBody("Page 2"));
+    server2.play();
 
     server.enqueue(new MockResponse()
         .setResponseCode(HttpURLConnection.HTTP_MOVED_TEMP)
-        .addHeader("Location: " + redirectTarget.getUrl("/")));
+        .addHeader("Location: " + server2.getUrl("/")));
     server.play();
 
     CookieManager cookieManager = new CookieManager(null, ACCEPT_ORIGINAL_SERVER);
@@ -748,8 +1016,28 @@ public final class CallTest {
         + "c=\"cookie\";$Path=\"/\";$Domain=\"" + server.getCookieDomain()
         + "\";$Port=\"" + portList + "\"");
 
-    RecordedRequest request2 = redirectTarget.takeRequest();
+    RecordedRequest request2 = server2.takeRequest();
     assertContainsNoneMatching(request2.getHeaders(), "Cookie.*");
+  }
+
+  @Test public void redirectsDoNotIncludeTooManyAuthHeaders() throws Exception {
+    server2.enqueue(new MockResponse().setBody("Page 2"));
+    server2.play();
+
+    server.enqueue(new MockResponse().setResponseCode(401));
+    server.enqueue(new MockResponse().setResponseCode(302)
+        .addHeader("Location: " + server2.getUrl("/b")));
+    server.play();
+
+    client.setAuthenticator(new RecordingOkAuthenticator(Credentials.basic("jesse", "secret")));
+
+    Request request = new Request.Builder().url(server.getUrl("/a")).build();
+    Response response = client.newCall(request).execute();
+    assertEquals("Page 2", response.body().string());
+
+    RecordedRequest redirectRequest = server2.takeRequest();
+    assertContainsNoneMatching(redirectRequest.getHeaders(), "Authorization.*");
+    assertEquals("/b", redirectRequest.getPath());
   }
 
   @Test public void redirect_Async() throws Exception {
@@ -772,10 +1060,10 @@ public final class CallTest {
     callback.await(server.getUrl("/c"))
         .assertCode(200)
         .assertBody("C")
-        .redirectedBy()
+        .priorResponse()
         .assertCode(302)
         .assertHeader("Test", "Redirect from /b to /c")
-        .redirectedBy()
+        .priorResponse()
         .assertCode(301)
         .assertHeader("Test", "Redirect from /a to /b");
 
@@ -924,16 +1212,17 @@ public final class CallTest {
   }
 
   @Test public void canceledBeforeResponseReadSignalsOnFailure() throws Exception {
+    server.play();
+    Request requestA = new Request.Builder().url(server.getUrl("/a")).tag("request A").build();
+    final Call call = client.newCall(requestA);
     server.setDispatcher(new Dispatcher() {
       @Override public MockResponse dispatch(RecordedRequest request) {
-        client.cancel("request A");
+        call.cancel();
         return new MockResponse().setBody("A");
       }
     });
-    server.play();
 
-    Request requestA = new Request.Builder().url(server.getUrl("/a")).tag("request A").build();
-    client.newCall(requestA).enqueue(callback);
+    call.enqueue(callback);
     assertEquals("/a", server.takeRequest().getPath());
 
     callback.await(requestA.url()).assertFailure("Canceled");
@@ -958,15 +1247,15 @@ public final class CallTest {
     server.play();
 
     final CountDownLatch latch = new CountDownLatch(1);
-    final AtomicReference<String> bodyRef = new AtomicReference<String>();
-    final AtomicReference<Failure> failureRef = new AtomicReference<Failure>();
+    final AtomicReference<String> bodyRef = new AtomicReference<>();
+    final AtomicBoolean failureRef = new AtomicBoolean();
 
     Request request = new Request.Builder().url(server.getUrl("/a")).tag("request A").build();
     final Call call = client.newCall(request);
-    call.enqueue(new Response.Callback() {
-      @Override public void onFailure(Failure failure) {
+    call.enqueue(new Callback() {
+      @Override public void onFailure(Request request, IOException e) {
+        failureRef.set(true);
         latch.countDown();
-        failureRef.set(failure); // This should never occur as we don't signal twice.
       }
 
       @Override public void onResponse(Response response) throws IOException {
@@ -984,7 +1273,7 @@ public final class CallTest {
 
     latch.await();
     assertEquals("A", bodyRef.get());
-    assertNull(failureRef.get());
+    assertFalse(failureRef.get());
   }
 
   @Test public void canceledAfterResponseIsDeliveredBreaksStreamButSignalsOnce_HTTP_2()
@@ -997,6 +1286,102 @@ public final class CallTest {
       throws Exception {
     enableProtocol(Protocol.SPDY_3);
     canceledAfterResponseIsDeliveredBreaksStreamButSignalsOnce();
+  }
+
+  @Test public void gzip() throws Exception {
+    Buffer gzippedBody = gzip("abcabcabc");
+    String bodySize = Long.toString(gzippedBody.size());
+
+    server.enqueue(new MockResponse()
+        .setBody(gzippedBody)
+        .addHeader("Content-Encoding: gzip"));
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .build();
+
+    // Confirm that the user request doesn't have Accept-Encoding, and the user
+    // response doesn't have a Content-Encoding or Content-Length.
+    RecordedResponse userResponse = executeSynchronously(request);
+    userResponse.assertCode(200)
+        .assertRequestHeader("Accept-Encoding")
+        .assertHeader("Content-Encoding")
+        .assertHeader("Content-Length")
+        .assertBody("abcabcabc");
+
+    // But the network request doesn't lie. OkHttp used gzip for this call.
+    userResponse.networkResponse()
+        .assertHeader("Content-Encoding", "gzip")
+        .assertHeader("Content-Length", bodySize)
+        .assertRequestHeader("Accept-Encoding", "gzip");
+  }
+
+  @Test public void asyncResponseCanBeConsumedLater() throws Exception {
+    server.enqueue(new MockResponse().setBody("abc"));
+    server.enqueue(new MockResponse().setBody("def"));
+    server.play();
+
+    Request request = new Request.Builder()
+        .url(server.getUrl("/"))
+        .header("User-Agent", "SyncApiTest")
+        .build();
+
+    final BlockingQueue<Response> responseRef = new SynchronousQueue<>();
+    client.newCall(request).enqueue(new Callback() {
+      @Override public void onFailure(Request request, IOException e) {
+        throw new AssertionError();
+      }
+
+      @Override public void onResponse(Response response) throws IOException {
+        try {
+          responseRef.put(response);
+        } catch (InterruptedException e) {
+          throw new AssertionError();
+        }
+      }
+    });
+
+    Response response = responseRef.take();
+    assertEquals(200, response.code());
+    assertEquals("abc", response.body().string());
+
+    // Make another request just to confirm that that connection can be reused...
+    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build()).assertBody("def");
+    assertEquals(0, server.takeRequest().getSequenceNumber()); // New connection.
+    assertEquals(1, server.takeRequest().getSequenceNumber()); // Connection reused.
+
+    // ... even before we close the response body!
+    response.body().close();
+  }
+
+  @Test public void userAgentIsOmittedByDefault() throws Exception {
+    server.enqueue(new MockResponse());
+    server.play();
+
+    executeSynchronously(new Request.Builder().url(server.getUrl("/")).build());
+
+    RecordedRequest recordedRequest = server.takeRequest();
+    assertNull(recordedRequest.getHeader("User-Agent"));
+  }
+
+  @Test
+  public void setFollowRedirectsFalse() throws Exception {
+    server.enqueue(new MockResponse()
+        .setResponseCode(302)
+        .addHeader("Location: /b")
+        .setBody("A"));
+    server.enqueue(new MockResponse()
+        .setBody("B"));
+    server.play();
+
+    client.setFollowRedirects(false);
+    RecordedResponse recordedResponse = executeSynchronously(
+        new Request.Builder().url(server.getUrl("/a")).build());
+
+    recordedResponse
+        .assertBody("A")
+        .assertCode(302);
   }
 
   private RecordedResponse executeSynchronously(Request request) throws IOException {
@@ -1014,6 +1399,14 @@ public final class CallTest {
     client.setProtocols(Arrays.asList(protocol, Protocol.HTTP_1_1));
     server.useHttps(sslContext.getSocketFactory(), false);
     server.setProtocols(client.getProtocols());
+  }
+
+  private Buffer gzip(String data) throws IOException {
+    Buffer result = new Buffer();
+    BufferedSink sink = Okio.buffer(new GzipSink(result));
+    sink.writeUtf8(data);
+    sink.close();
+    return result;
   }
 
   private void assertContains(Collection<String> collection, String element) {

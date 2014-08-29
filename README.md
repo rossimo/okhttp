@@ -1,16 +1,12 @@
 OkHttp
 ======
 
-An HTTP & SPDY client for Android and Java applications.
-
-For more information please see [the website][1].
-
-
+An HTTP & SPDY client for Android and Java applications. For more information see [the website][1] and [the wiki][2].
 
 Download
 --------
 
-Download [the latest JAR][2] or grab via Maven:
+Download [the latest JAR][3] or grab via Maven:
 
 ```xml
 <dependency>
@@ -21,45 +17,6 @@ Download [the latest JAR][2] or grab via Maven:
 ```
 
 
-Building
---------
-
-OkHttp requires Java 7 to build and run tests. Runtime compatibility with Java 6 is enforced as
-part of the build to ensure compliance with Android and older versions of the JVM.
-
-
-
-Testing
--------
-
-### On the Desktop
-
-Run OkHttp tests on the desktop with Maven. Running HTTP/2 and SPDY tests on the desktop uses
-[Jetty-NPN][3] when running OpenJDK 7 or [Jetty-ALPN][4] when OpenJDK 8.
-
-```
-mvn clean test
-```
-
-### On a Device
-
-OkHttp's test suite creates an in-process HTTPS server. Prior to Android 2.3, SSL server sockets
-were broken, and so HTTPS tests will time out when run on such devices.
-
-Test on a USB-attached Android using [Vogar][5]. Unfortunately `dx` requires that you build with
-Java 6, otherwise the test class will be silently omitted from the `.dex` file.
-
-```
-mvn clean
-mvn package -DskipTests
-vogar \
-    --classpath ~/.m2/repository/org/bouncycastle/bcprov-jdk15on/1.48/bcprov-jdk15on-1.48.jar \
-    --classpath mockwebserver/target/mockwebserver-2.0.0-SNAPSHOT.jar \
-    --classpath okhttp-protocols/target/okhttp-protocols-2.0.0-SNAPSHOT.jar \
-    --classpath okhttp/target/okhttp-2.0.0-SNAPSHOT.jar \
-    okhttp/src/test
-```
-
 MockWebServer
 -------------
 
@@ -69,7 +26,7 @@ MockWebServer coupling with OkHttp is essential for proper testing of SPDY and H
 
 ### Download
 
-Download [the latest JAR][6] or grab via Maven:
+Download [the latest JAR][4] or grab via Maven:
 
 ```xml
 <dependency>
@@ -97,11 +54,7 @@ License
     limitations under the License.
 
 
-
-
  [1]: http://square.github.io/okhttp
- [2]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=okhttp&v=LATEST
- [3]: https://github.com/jetty-project/jetty-npn
- [4]: https://github.com/jetty-project/jetty-alpn
- [5]: https://code.google.com/p/vogar/
- [6]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=mockwebserver&v=LATEST
+ [2]: https://github.com/square/okhttp/wiki
+ [3]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=okhttp&v=LATEST
+ [4]: http://repository.sonatype.org/service/local/artifact/maven/redirect?r=central-proxy&g=com.squareup.okhttp&a=mockwebserver&v=LATEST

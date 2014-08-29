@@ -18,7 +18,9 @@ package com.squareup.okhttp.internal.http;
 
 import com.squareup.okhttp.AbstractResponseCache;
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.internal.Internal;
+import com.squareup.okhttp.internal.huc.CacheAdapter;
 import java.io.IOException;
 import java.net.CacheResponse;
 import java.net.HttpURLConnection;
@@ -120,19 +122,19 @@ public final class URLEncodingTest {
   }
 
   private URI backdoorUrlToUri(URL url) throws Exception {
-    final AtomicReference<URI> uriReference = new AtomicReference<URI>();
+    final AtomicReference<URI> uriReference = new AtomicReference<>();
 
     OkHttpClient client = new OkHttpClient();
-    Internal.instance.setResponseCache(client, new AbstractResponseCache() {
+    Internal.instance.setCache(client, new CacheAdapter(new AbstractResponseCache() {
       @Override public CacheResponse get(URI uri, String requestMethod,
           Map<String, List<String>> requestHeaders) throws IOException {
         uriReference.set(uri);
         throw new UnsupportedOperationException();
       }
-    });
+    }));
 
     try {
-      HttpURLConnection connection = client.open(url);
+      HttpURLConnection connection = new OkUrlFactory(client).open(url);
       connection.getResponseCode();
     } catch (Exception expected) {
       if (expected.getCause() instanceof URISyntaxException) {

@@ -26,19 +26,19 @@ import okio.Buffer;
 /**
  * Records received HTTP responses so they can be later retrieved by tests.
  */
-public class RecordingCallback implements Response.Callback {
+public class RecordingCallback implements Callback {
   public static final long TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(10);
 
-  private final List<RecordedResponse> responses = new ArrayList<RecordedResponse>();
+  private final List<RecordedResponse> responses = new ArrayList<>();
 
-  @Override public synchronized void onFailure(Failure failure) {
-    responses.add(new RecordedResponse(failure.request(), null, null, failure));
+  @Override public synchronized void onFailure(Request request, IOException e) {
+    responses.add(new RecordedResponse(request, null, null, e));
     notifyAll();
   }
 
   @Override public synchronized void onResponse(Response response) throws IOException {
     Buffer buffer = new Buffer();
-    Response.Body body = response.body();
+    ResponseBody body = response.body();
     body.source().readAll(buffer);
 
     responses.add(new RecordedResponse(response.request(), response, buffer.readUtf8(), null));

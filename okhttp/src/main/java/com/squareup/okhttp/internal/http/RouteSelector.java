@@ -18,10 +18,12 @@ package com.squareup.okhttp.internal.http;
 import com.squareup.okhttp.Address;
 import com.squareup.okhttp.Connection;
 import com.squareup.okhttp.ConnectionPool;
+import com.squareup.okhttp.HostResolver;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Request;
 import com.squareup.okhttp.Route;
-import com.squareup.okhttp.RouteDatabase;
-import com.squareup.okhttp.internal.Dns;
 import com.squareup.okhttp.internal.Internal;
+import com.squareup.okhttp.internal.RouteDatabase;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -30,12 +32,14 @@ import java.net.ProxySelector;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLProtocolException;
+import javax.net.ssl.SSLSocketFactory;
 
 import static com.squareup.okhttp.internal.Util.getEffectivePort;
 
@@ -50,10 +54,12 @@ public final class RouteSelector {
 
   private final Address address;
   private final URI uri;
+  private final HostResolver hostResolver;
+  private final OkHttpClient client;
   private final ProxySelector proxySelector;
   private final ConnectionPool pool;
-  private final Dns dns;
   private final RouteDatabase routeDatabase;
+  private final Request request;
 
   /* The most recently attempted route. */
   private Proxy lastProxy;
@@ -73,19 +79,39 @@ public final class RouteSelector {
   private String nextTlsVersion;
 
   /* State for negotiating failed routes */
-  private final List<Route> postponedRoutes;
+  private final List<Route> postponedRoutes = new ArrayList<>();
 
-  public RouteSelector(Address address, URI uri, ProxySelector proxySelector, ConnectionPool pool,
-      Dns dns, RouteDatabase routeDatabase) {
+  private RouteSelector(Address address, URI uri, OkHttpClient client, Request request) {
     this.address = address;
     this.uri = uri;
-    this.proxySelector = proxySelector;
-    this.pool = pool;
-    this.dns = dns;
-    this.routeDatabase = routeDatabase;
-    this.postponedRoutes = new LinkedList<Route>();
+    this.client = client;
+    this.proxySelector = client.getProxySelector();
+    this.pool = client.getConnectionPool();
+    this.routeDatabase = Internal.instance.routeDatabase(client);
+    this.hostResolver = client.getHostResolver();
+    this.request = request;
 
     resetNextProxy(uri, address.getProxy());
+  }
+
+  public static RouteSelector get(Request request, OkHttpClient client) throws IOException {
+    String uriHost = request.url().getHost();
+    if (uriHost == null || uriHost.length() == 0) {
+      throw new UnknownHostException(request.url().toString());
+    }
+
+    SSLSocketFactory sslSocketFactory = null;
+    HostnameVerifier hostnameVerifier = null;
+    if (request.isHttps()) {
+      sslSocketFactory = client.getSslSocketFactory();
+      hostnameVerifier = client.getHostnameVerifier();
+    }
+
+    Address address = new Address(uriHost, getEffectivePort(request.url()),
+        client.getSocketFactory(), sslSocketFactory, hostnameVerifier, client.getAuthenticator(),
+        client.getProxy(), client.getProtocols());
+
+    return new RouteSelector(address, request.uri(), client, request);
   }
 
   /**
@@ -99,15 +125,22 @@ public final class RouteSelector {
         || hasNextPostponed();
   }
 
+  /** Selects a route to attempt and connects it if it isn't already. */
+  public Connection next(HttpEngine owner) throws IOException {
+    Connection connection = nextUnconnected();
+    Internal.instance.connectAndSetOwner(client, connection, owner, request);
+    return connection;
+  }
+
   /**
-   * Returns the next route address to attempt.
+   * Returns the next connection to attempt.
    *
    * @throws NoSuchElementException if there are no more routes to attempt.
    */
-  public Connection next(String method) throws IOException {
+  Connection nextUnconnected() throws IOException {
     // Always prefer pooled connections over new connections.
     for (Connection pooled; (pooled = pool.get(address)) != null; ) {
-      if (method.equals("GET") || Internal.instance.isReadable(pooled)) return pooled;
+      if (request.method().equals("GET") || Internal.instance.isReadable(pooled)) return pooled;
       pooled.getSocket().close();
     }
 
@@ -133,7 +166,7 @@ public final class RouteSelector {
       postponedRoutes.add(route);
       // We will only recurse in order to skip previously failed routes. They will be
       // tried last.
-      return next(method);
+      return nextUnconnected();
     }
 
     return new Connection(pool, route);
@@ -228,7 +261,7 @@ public final class RouteSelector {
     }
 
     // Try each address for best behavior in mixed IPv4/IPv6 environments.
-    socketAddresses = dns.getAllByName(socketHost);
+    socketAddresses = hostResolver.getAllByName(socketHost);
     nextSocketAddressIndex = 0;
   }
 

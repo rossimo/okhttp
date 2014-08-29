@@ -17,6 +17,7 @@ package com.squareup.okhttp.internal.huc;
 
 import com.squareup.okhttp.AbstractResponseCache;
 import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.SslContextBuilder;
 import com.squareup.okhttp.mockwebserver.MockResponse;
@@ -94,9 +95,9 @@ public class CacheAdapterTest {
         return null;
       }
     };
-    Internal.instance.setResponseCache(client, responseCache);
+    Internal.instance.setCache(client, new CacheAdapter(responseCache));
 
-    connection = client.open(serverUrl);
+    connection = new OkUrlFactory(client).open(serverUrl);
     connection.setRequestProperty("key1", "value1");
 
     executeGet(connection);
@@ -117,11 +118,11 @@ public class CacheAdapterTest {
         return null;
       }
     };
-    Internal.instance.setResponseCache(client, responseCache);
+    Internal.instance.setCache(client, new CacheAdapter(responseCache));
     client.setSslSocketFactory(sslContext.getSocketFactory());
     client.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
 
-    connection = client.open(serverUrl);
+    connection = new OkUrlFactory(client).open(serverUrl);
     connection.setRequestProperty("key1", "value1");
 
     executeGet(connection);
@@ -159,9 +160,9 @@ public class CacheAdapterTest {
         return null;
       }
     };
-    Internal.instance.setResponseCache(client, responseCache);
+    Internal.instance.setCache(client, new CacheAdapter(responseCache));
 
-    connection = client.open(serverUrl);
+    connection = new OkUrlFactory(client).open(serverUrl);
     connection.setRequestProperty("key", "value");
     executeGet(connection);
   }
@@ -198,9 +199,9 @@ public class CacheAdapterTest {
         return null;
       }
     };
-    Internal.instance.setResponseCache(client, responseCache);
+    Internal.instance.setCache(client, new CacheAdapter(responseCache));
 
-    connection = client.open(serverUrl);
+    connection = new OkUrlFactory(client).open(serverUrl);
 
     executePost(connection);
   }
@@ -230,11 +231,11 @@ public class CacheAdapterTest {
         return null;
       }
     };
-    Internal.instance.setResponseCache(client, responseCache);
+    Internal.instance.setCache(client, new CacheAdapter(responseCache));
     client.setSslSocketFactory(sslContext.getSocketFactory());
     client.setHostnameVerifier(NULL_HOSTNAME_VERIFIER);
 
-    connection = client.open(serverUrl);
+    connection = new OkUrlFactory(client).open(serverUrl);
     executeGet(connection);
   }
 

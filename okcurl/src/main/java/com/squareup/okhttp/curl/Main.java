@@ -22,9 +22,11 @@ import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.Protocol;
 import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
 import com.squareup.okhttp.Response;
 import com.squareup.okhttp.internal.http.StatusLine;
-import com.squareup.okhttp.internal.spdy.Http20Draft10;
+import com.squareup.okhttp.internal.spdy.Http20Draft13;
+
 import io.airlift.command.Arguments;
 import io.airlift.command.Command;
 import io.airlift.command.HelpOption;
@@ -187,7 +189,7 @@ public class Main extends HelpOption implements Runnable {
     return "GET";
   }
 
-  private Request.Body getRequestBody() {
+  private RequestBody getRequestBody() {
     if (data == null) {
       return null;
     }
@@ -205,7 +207,7 @@ public class Main extends HelpOption implements Runnable {
       }
     }
 
-    return Request.Body.create(MediaType.parse(mimeType), bodyData);
+    return RequestBody.create(MediaType.parse(mimeType), bodyData);
   }
 
   Request createRequest() {
@@ -264,7 +266,7 @@ public class Main extends HelpOption implements Runnable {
   }
 
   private static void enableHttp2FrameLogging() {
-    Logger logger = Logger.getLogger(Http20Draft10.class.getName());
+    Logger logger = Logger.getLogger(Http20Draft13.class.getName());
     logger.setLevel(Level.FINE);
     ConsoleHandler handler = new ConsoleHandler();
     handler.setLevel(Level.FINE);

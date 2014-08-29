@@ -17,24 +17,17 @@ package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.Internal;
 import com.squareup.okhttp.internal.InternalCache;
+import com.squareup.okhttp.internal.RouteDatabase;
 import com.squareup.okhttp.internal.Util;
+import com.squareup.okhttp.internal.http.AuthenticatorAdapter;
 import com.squareup.okhttp.internal.http.HttpEngine;
 import com.squareup.okhttp.internal.http.Transport;
-import com.squareup.okhttp.internal.huc.AuthenticatorAdapter;
-import com.squareup.okhttp.internal.huc.CacheAdapter;
-import com.squareup.okhttp.internal.huc.HttpURLConnectionImpl;
-import com.squareup.okhttp.internal.huc.HttpsURLConnectionImpl;
 import com.squareup.okhttp.internal.tls.OkHostnameVerifier;
 import java.io.IOException;
 import java.net.CookieHandler;
-import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.ProxySelector;
-import java.net.ResponseCache;
-import java.net.URL;
 import java.net.URLConnection;
-import java.net.URLStreamHandler;
-import java.net.URLStreamHandlerFactory;
 import java.security.GeneralSecurityException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -54,7 +47,7 @@ import javax.net.ssl.SSLSocketFactory;
  * {@link #clone()} to make a shallow copy of the OkHttpClient that can be
  * safely modified with further configuration changes.
  */
-public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
+public class OkHttpClient implements Cloneable {
   static {
     Internal.instance = new Internal() {
       @Override public Transport newTransport(
@@ -74,34 +67,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
         return connection.recycleCount();
       }
 
-      @Override public Object getOwner(Connection connection) {
-        return connection.getOwner();
-      }
-
       @Override public void setProtocol(Connection connection, Protocol protocol) {
         connection.setProtocol(protocol);
       }
 
       @Override public void setOwner(Connection connection, HttpEngine httpEngine) {
         connection.setOwner(httpEngine);
-      }
-
-      @Override public void connect(Connection connection, int connectTimeout, int readTimeout,
-          int writeTimeout, Request request) throws IOException {
-        connection.connect(connectTimeout, readTimeout, writeTimeout, request);
-      }
-
-      @Override public boolean isConnected(Connection connection) {
-        return connection.isConnected();
-      }
-
-      @Override public boolean isSpdy(Connection connection) {
-        return connection.isSpdy();
-      }
-
-      @Override public void setTimeouts(Connection connection, int readTimeout, int writeTimeout)
-          throws IOException {
-        connection.setTimeouts(readTimeout, writeTimeout);
       }
 
       @Override public boolean isReadable(Connection pooled) {
@@ -112,8 +83,8 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
         builder.addLine(line);
       }
 
-      @Override public void setResponseCache(OkHttpClient client, ResponseCache responseCache) {
-        client.setResponseCache(responseCache);
+      @Override public void setCache(OkHttpClient client, InternalCache internalCache) {
+        client.setInternalCache(internalCache);
       }
 
       @Override public InternalCache internalCache(OkHttpClient client) {
@@ -124,11 +95,19 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
         pool.recycle(connection);
       }
 
-      @Override public void share(ConnectionPool connectionPool, Connection connection) {
-        connectionPool.share(connection);
+      @Override public RouteDatabase routeDatabase(OkHttpClient client) {
+        return client.routeDatabase();
+      }
+
+      @Override public void connectAndSetOwner(OkHttpClient client, Connection connection,
+          HttpEngine owner, Request request) throws IOException {
+        connection.connectAndSetOwner(client, owner, request);
       }
     };
   }
+
+  /** Lazily-initialized. */
+  private static SSLSocketFactory defaultSslSocketFactory;
 
   private final RouteDatabase routeDatabase;
   private Dispatcher dispatcher;
@@ -137,16 +116,18 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
   private ProxySelector proxySelector;
   private CookieHandler cookieHandler;
 
-  // At least one of the two cache fields will be null.
+  /** Non-null if this client is caching; possibly by {@code cache}. */
+  private InternalCache internalCache;
   private Cache cache;
-  private CacheAdapter cacheAdapter;
 
   private SocketFactory socketFactory;
   private SSLSocketFactory sslSocketFactory;
   private HostnameVerifier hostnameVerifier;
-  private OkAuthenticator authenticator;
+  private Authenticator authenticator;
   private ConnectionPool connectionPool;
+  private HostResolver hostResolver;
   private boolean followSslRedirects = true;
+  private boolean followRedirects = true;
   private int connectTimeout;
   private int readTimeout;
   private int writeTimeout;
@@ -157,22 +138,42 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
     dispatcher = new Dispatcher();
   }
 
+  private OkHttpClient(OkHttpClient okHttpClient) {
+    this.routeDatabase = okHttpClient.routeDatabase();
+    this.dispatcher = okHttpClient.getDispatcher();
+    this.proxy = okHttpClient.getProxy();
+    this.protocols = okHttpClient.getProtocols();
+    this.proxySelector = okHttpClient.getProxySelector();
+    this.cookieHandler = okHttpClient.getCookieHandler();
+    this.cache = okHttpClient.getCache();
+    this.internalCache = cache != null ? cache.internalCache : okHttpClient.internalCache;
+    this.socketFactory = okHttpClient.getSocketFactory();
+    this.sslSocketFactory = okHttpClient.getSslSocketFactory();
+    this.hostnameVerifier = okHttpClient.getHostnameVerifier();
+    this.authenticator = okHttpClient.getAuthenticator();
+    this.connectionPool = okHttpClient.getConnectionPool();
+    this.followSslRedirects = okHttpClient.getFollowSslRedirects();
+    this.followRedirects = okHttpClient.getFollowRedirects();
+    this.connectTimeout = okHttpClient.getConnectTimeout();
+    this.readTimeout = okHttpClient.getReadTimeout();
+    this.writeTimeout = okHttpClient.getWriteTimeout();
+  }
+
   /**
    * Sets the default connect timeout for new connections. A value of 0 means no timeout.
    *
    * @see URLConnection#setConnectTimeout(int)
    */
-  public OkHttpClient setConnectTimeout(long timeout, TimeUnit unit) {
+  public final void setConnectTimeout(long timeout, TimeUnit unit) {
     if (timeout < 0) throw new IllegalArgumentException("timeout < 0");
     if (unit == null) throw new IllegalArgumentException("unit == null");
     long millis = unit.toMillis(timeout);
     if (millis > Integer.MAX_VALUE) throw new IllegalArgumentException("Timeout too large.");
     connectTimeout = (int) millis;
-    return this;
   }
 
   /** Default connect timeout (in milliseconds). */
-  public int getConnectTimeout() {
+  public final int getConnectTimeout() {
     return connectTimeout;
   }
 
@@ -181,34 +182,32 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    *
    * @see URLConnection#setReadTimeout(int)
    */
-  public OkHttpClient setReadTimeout(long timeout, TimeUnit unit) {
+  public final void setReadTimeout(long timeout, TimeUnit unit) {
     if (timeout < 0) throw new IllegalArgumentException("timeout < 0");
     if (unit == null) throw new IllegalArgumentException("unit == null");
     long millis = unit.toMillis(timeout);
     if (millis > Integer.MAX_VALUE) throw new IllegalArgumentException("Timeout too large.");
     readTimeout = (int) millis;
-    return this;
   }
 
   /** Default read timeout (in milliseconds). */
-  public int getReadTimeout() {
+  public final int getReadTimeout() {
     return readTimeout;
   }
 
   /**
    * Sets the default write timeout for new connections. A value of 0 means no timeout.
    */
-  public OkHttpClient setWriteTimeout(long timeout, TimeUnit unit) {
+  public final void setWriteTimeout(long timeout, TimeUnit unit) {
     if (timeout < 0) throw new IllegalArgumentException("timeout < 0");
     if (unit == null) throw new IllegalArgumentException("unit == null");
     long millis = unit.toMillis(timeout);
     if (millis > Integer.MAX_VALUE) throw new IllegalArgumentException("Timeout too large.");
     writeTimeout = (int) millis;
-    return this;
   }
 
   /** Default write timeout (in milliseconds). */
-  public int getWriteTimeout() {
+  public final int getWriteTimeout() {
     return writeTimeout;
   }
 
@@ -218,12 +217,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * only honored when this proxy is null (which it is by default). To disable
    * proxy use completely, call {@code setProxy(Proxy.NO_PROXY)}.
    */
-  public OkHttpClient setProxy(Proxy proxy) {
+  public final OkHttpClient setProxy(Proxy proxy) {
     this.proxy = proxy;
     return this;
   }
 
-  public Proxy getProxy() {
+  public final Proxy getProxy() {
     return proxy;
   }
 
@@ -236,12 +235,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, the {@link ProxySelector#getDefault() system-wide default}
    * proxy selector will be used.
    */
-  public OkHttpClient setProxySelector(ProxySelector proxySelector) {
+  public final OkHttpClient setProxySelector(ProxySelector proxySelector) {
     this.proxySelector = proxySelector;
     return this;
   }
 
-  public ProxySelector getProxySelector() {
+  public final ProxySelector getProxySelector() {
     return proxySelector;
   }
 
@@ -252,38 +251,33 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, the {@link CookieHandler#getDefault() system-wide default}
    * cookie handler will be used.
    */
-  public OkHttpClient setCookieHandler(CookieHandler cookieHandler) {
+  public final OkHttpClient setCookieHandler(CookieHandler cookieHandler) {
     this.cookieHandler = cookieHandler;
     return this;
   }
 
-  public CookieHandler getCookieHandler() {
+  public final CookieHandler getCookieHandler() {
     return cookieHandler;
   }
 
   /** Sets the response cache to be used to read and write cached responses. */
-  OkHttpClient setResponseCache(ResponseCache responseCache) {
-    this.cacheAdapter = responseCache != null ? new CacheAdapter(responseCache) : null;
+  final void setInternalCache(InternalCache internalCache) {
+    this.internalCache = internalCache;
     this.cache = null;
-    return this;
   }
 
-  ResponseCache getResponseCache() {
-    return cacheAdapter != null ? cacheAdapter.getDelegate() : null;
+  final InternalCache internalCache() {
+    return internalCache;
   }
 
-  public OkHttpClient setCache(Cache cache) {
+  public final OkHttpClient setCache(Cache cache) {
     this.cache = cache;
-    this.cacheAdapter = null;
+    this.internalCache = null;
     return this;
   }
 
-  public Cache getCache() {
+  public final Cache getCache() {
     return cache;
-  }
-
-  InternalCache internalCache() {
-    return cache != null ? cache.internalCache : cacheAdapter;
   }
 
   /**
@@ -292,12 +286,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, the {@link SocketFactory#getDefault() system-wide default}
    * socket factory will be used.
    */
-  public OkHttpClient setSocketFactory(SocketFactory socketFactory) {
+  public final OkHttpClient setSocketFactory(SocketFactory socketFactory) {
     this.socketFactory = socketFactory;
     return this;
   }
 
-  public SocketFactory getSocketFactory() {
+  public final SocketFactory getSocketFactory() {
     return socketFactory;
   }
 
@@ -306,12 +300,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    *
    * <p>If unset, a lazily created SSL socket factory will be used.
    */
-  public OkHttpClient setSslSocketFactory(SSLSocketFactory sslSocketFactory) {
+  public final OkHttpClient setSslSocketFactory(SSLSocketFactory sslSocketFactory) {
     this.sslSocketFactory = sslSocketFactory;
     return this;
   }
 
-  public SSLSocketFactory getSslSocketFactory() {
+  public final SSLSocketFactory getSslSocketFactory() {
     return sslSocketFactory;
   }
 
@@ -323,12 +317,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * {@link javax.net.ssl.HttpsURLConnection#getDefaultHostnameVerifier()
    * system-wide default} hostname verifier will be used.
    */
-  public OkHttpClient setHostnameVerifier(HostnameVerifier hostnameVerifier) {
+  public final OkHttpClient setHostnameVerifier(HostnameVerifier hostnameVerifier) {
     this.hostnameVerifier = hostnameVerifier;
     return this;
   }
 
-  public HostnameVerifier getHostnameVerifier() {
+  public final HostnameVerifier getHostnameVerifier() {
     return hostnameVerifier;
   }
 
@@ -339,12 +333,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, the {@link java.net.Authenticator#setDefault system-wide default}
    * authenticator will be used.
    */
-  public OkHttpClient setAuthenticator(OkAuthenticator authenticator) {
+  public final OkHttpClient setAuthenticator(Authenticator authenticator) {
     this.authenticator = authenticator;
     return this;
   }
 
-  public OkAuthenticator getAuthenticator() {
+  public final Authenticator getAuthenticator() {
     return authenticator;
   }
 
@@ -354,12 +348,12 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, the {@link ConnectionPool#getDefault() system-wide
    * default} connection pool will be used.
    */
-  public OkHttpClient setConnectionPool(ConnectionPool connectionPool) {
+  public final OkHttpClient setConnectionPool(ConnectionPool connectionPool) {
     this.connectionPool = connectionPool;
     return this;
   }
 
-  public ConnectionPool getConnectionPool() {
+  public final ConnectionPool getConnectionPool() {
     return connectionPool;
   }
 
@@ -385,16 +379,30 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <p>If unset, protocol redirects will be followed. This is different than
    * the built-in {@code HttpURLConnection}'s default.
    */
-  public OkHttpClient setFollowSslRedirects(boolean followProtocolRedirects) {
+  public final OkHttpClient setFollowSslRedirects(boolean followProtocolRedirects) {
     this.followSslRedirects = followProtocolRedirects;
     return this;
   }
 
-  public boolean getFollowSslRedirects() {
+  public final boolean getFollowSslRedirects() {
     return followSslRedirects;
   }
 
-  public RouteDatabase getRoutesDatabase() {
+  /**
+   * Configure this client to follow redirects.
+   *
+   * <p>If unset, redirects will not be followed. This is the equivalent as the
+   * built-in {@code HttpURLConnection}'s default.
+   */
+  public final void setFollowRedirects(boolean followRedirects) {
+    this.followRedirects = followRedirects;
+  }
+
+  public final boolean getFollowRedirects() {
+    return followRedirects;
+  }
+
+  final RouteDatabase routeDatabase() {
     return routeDatabase;
   }
 
@@ -402,13 +410,13 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * Sets the dispatcher used to set policy and execute asynchronous requests.
    * Must not be null.
    */
-  public OkHttpClient setDispatcher(Dispatcher dispatcher) {
+  public final OkHttpClient setDispatcher(Dispatcher dispatcher) {
     if (dispatcher == null) throw new IllegalArgumentException("dispatcher == null");
     this.dispatcher = dispatcher;
     return this;
   }
 
-  public Dispatcher getDispatcher() {
+  public final Dispatcher getDispatcher() {
     return dispatcher;
   }
 
@@ -423,11 +431,11 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * <ul>
    *   <li><a href="http://www.w3.org/Protocols/rfc2616/rfc2616.html">http/1.1</a>
    *   <li><a href="http://www.chromium.org/spdy/spdy-protocol/spdy-protocol-draft3-1">spdy/3.1</a>
-   *   <li><a href="http://tools.ietf.org/html/draft-ietf-httpbis-http2-10">h2-10</a>
+   *   <li><a href="http://tools.ietf.org/html/draft-ietf-httpbis-http2-13">h2-13</a>
    * </ul>
    *
    * <p><strong>This is an evolving set.</strong> Future releases may drop
-   * support for transitional protocols (like h2-10), in favor of their
+   * support for transitional protocols (like h2-13), in favor of their
    * successors (h2). The http/1.1 transport will never be dropped.
    *
    * <p>If multiple protocols are specified, <a
@@ -438,7 +446,7 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * @param protocols the protocols to use, in order of preference. The list
    *     must contain {@link Protocol#HTTP_1_1}. It must not contain null.
    */
-  public OkHttpClient setProtocols(List<Protocol> protocols) {
+  public final OkHttpClient setProtocols(List<Protocol> protocols) {
     protocols = Util.immutableList(protocols);
     if (!protocols.contains(Protocol.HTTP_1_1)) {
       throw new IllegalArgumentException("protocols doesn't contain http/1.1: " + protocols);
@@ -450,18 +458,28 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
     return this;
   }
 
-  public List<Protocol> getProtocols() {
+  public final List<Protocol> getProtocols() {
     return protocols;
+  }
+
+  /*
+   * Sets the {@code HostResolver} that will be used by this client to resolve
+   * hostnames to IP addresses.
+   */
+  public OkHttpClient setHostResolver(HostResolver hostResolver) {
+    this.hostResolver = hostResolver;
+    return this;
+  }
+
+  public HostResolver getHostResolver() {
+    return hostResolver;
   }
 
   /**
    * Prepares the {@code request} to be executed at some point in the future.
    */
   public Call newCall(Request request) {
-    // Copy the client. Otherwise changes (socket factory, redirect policy,
-    // etc.) may incorrectly be reflected in the request when it is executed.
-    OkHttpClient client = copyWithDefaults();
-    return new Call(client, dispatcher, request);
+    return new Call(this, request);
   }
 
   /**
@@ -469,40 +487,21 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * complete cannot be canceled.
    */
   public OkHttpClient cancel(Object tag) {
-    dispatcher.cancel(tag);
+    getDispatcher().cancel(tag);
     return this;
-  }
-
-  public HttpURLConnection open(URL url) {
-    return open(url, proxy);
-  }
-
-  HttpURLConnection open(URL url, Proxy proxy) {
-    String protocol = url.getProtocol();
-    OkHttpClient copy = copyWithDefaults();
-    copy.proxy = proxy;
-
-    if (protocol.equals("http")) return new HttpURLConnectionImpl(url, copy);
-    if (protocol.equals("https")) return new HttpsURLConnectionImpl(url, copy);
-    throw new IllegalArgumentException("Unexpected protocol: " + protocol);
   }
 
   /**
    * Returns a shallow copy of this OkHttpClient that uses the system-wide
    * default for each field that hasn't been explicitly configured.
    */
-  OkHttpClient copyWithDefaults() {
-    OkHttpClient result = clone();
+  final OkHttpClient copyWithDefaults() {
+    OkHttpClient result = new OkHttpClient(this);
     if (result.proxySelector == null) {
       result.proxySelector = ProxySelector.getDefault();
     }
     if (result.cookieHandler == null) {
       result.cookieHandler = CookieHandler.getDefault();
-    }
-    if (result.cache == null && result.cacheAdapter == null) {
-      // TODO: drop support for the default response cache.
-      ResponseCache defaultCache = ResponseCache.getDefault();
-      result.cacheAdapter = defaultCache != null ? new CacheAdapter(defaultCache) : null;
     }
     if (result.socketFactory == null) {
       result.socketFactory = SocketFactory.getDefault();
@@ -522,6 +521,9 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
     if (result.protocols == null) {
       result.protocols = Util.immutableList(Protocol.HTTP_2, Protocol.SPDY_3, Protocol.HTTP_1_1);
     }
+    if (result.hostResolver == null) {
+      result.hostResolver = HostResolver.DEFAULT;
+    }
     return result;
   }
 
@@ -531,60 +533,30 @@ public final class OkHttpClient implements URLStreamHandlerFactory, Cloneable {
    * used the shared SSL context, when OkHttp enables NPN for its SPDY-related
    * stuff, it would also enable NPN for other usages, which might crash them
    * because NPN is enabled when it isn't expected to be.
-   * <p>
-   * This code avoids that by defaulting to an OkHttp created SSL context. The
-   * significant drawback of this approach is that apps that customize the
-   * global SSL context will lose these customizations.
+   *
+   * <p>This code avoids that by defaulting to an OkHttp-created SSL context.
+   * The drawback of this approach is that apps that customize the global SSL
+   * context will lose these customizations.
    */
   private synchronized SSLSocketFactory getDefaultSSLSocketFactory() {
-    if (sslSocketFactory == null) {
+    if (defaultSslSocketFactory == null) {
       try {
         SSLContext sslContext = SSLContext.getInstance("TLS");
         sslContext.init(null, null, null);
-        sslSocketFactory = sslContext.getSocketFactory();
+        defaultSslSocketFactory = sslContext.getSocketFactory();
       } catch (GeneralSecurityException e) {
         throw new AssertionError(); // The system has no TLS. Just give up.
       }
     }
-    return sslSocketFactory;
+    return defaultSslSocketFactory;
   }
 
   /** Returns a shallow copy of this OkHttpClient. */
-  @Override public OkHttpClient clone() {
+  @Override public final OkHttpClient clone() {
     try {
       return (OkHttpClient) super.clone();
     } catch (CloneNotSupportedException e) {
       throw new AssertionError();
     }
-  }
-
-  /**
-   * Creates a URLStreamHandler as a {@link URL#setURLStreamHandlerFactory}.
-   *
-   * <p>This code configures OkHttp to handle all HTTP and HTTPS connections
-   * created with {@link URL#openConnection()}: <pre>   {@code
-   *
-   *   OkHttpClient okHttpClient = new OkHttpClient();
-   *   URL.setURLStreamHandlerFactory(okHttpClient);
-   * }</pre>
-   */
-  public URLStreamHandler createURLStreamHandler(final String protocol) {
-    if (!protocol.equals("http") && !protocol.equals("https")) return null;
-
-    return new URLStreamHandler() {
-      @Override protected URLConnection openConnection(URL url) {
-        return open(url);
-      }
-
-      @Override protected URLConnection openConnection(URL url, Proxy proxy) {
-        return open(url, proxy);
-      }
-
-      @Override protected int getDefaultPort() {
-        if (protocol.equals("http")) return 80;
-        if (protocol.equals("https")) return 443;
-        throw new AssertionError();
-      }
-    };
   }
 }
